@@ -1,7 +1,6 @@
 //! Windows.Graphics.Capture implementation.
-//! Methods: wgc-window / wgc-window2 (window target), wgc-monitor /
-//! wgc-monitor2 (monitor target). Crops to frame ContentSize, retries up to 5
-//! frames until one passes the usable-frame heuristic
+//! Methods: wgc-window (window target), wgc-monitor (monitor target). Crops to
+//! frame ContentSize, retries up to 5 frames until one passes the usable-frame heuristic
 //! (transparent_ratio < 0.98 && black_ratio < 0.98).
 
 use std::sync::mpsc;
@@ -155,6 +154,24 @@ fn is_probably_usable_frame(img: &ImageBuffer) -> bool {
     stats.transparent_ratio < 0.98 && stats.black_ratio < 0.98
 }
 
+fn frame_origin(ctx: &CaptureContext) -> Rect {
+    if ctx.method == "wgc-window" {
+        ctx.window
+            .as_ref()
+            .map_or(ctx.capture_rect_screen, |w| w.rect)
+    } else {
+        ctx.capture_rect_screen
+    }
+}
+
+fn apply_force_alpha(ctx: &CaptureContext, img: &mut ImageBuffer) {
+    if ctx.cap.force_alpha_255 {
+        for alpha in (3..img.bgra.len()).step_by(4) {
+            img.bgra[alpha] = 0xFF;
+        }
+    }
+}
+
 /// Registers `FrameArrived`, starts the session, and receives up to
 /// `MAX_FRAMES` frames looking for a usable one. The event handler only
 /// forwards frames through a channel, so logging and image processing stay on
@@ -182,9 +199,10 @@ fn run_capture_loop(
         .map_err(|e| to_err(e, "CaptureWithWgc"))?;
 
     wgc_log(logger, "start capture");
-    session
-        .StartCapture()
-        .map_err(|e| to_err(e, "CaptureWithWgc"))?;
+    if let Err(e) = session.StartCapture() {
+        let _ = frame_pool.RemoveFrameArrived(token);
+        return Err(to_err(e, "CaptureWithWgc"));
+    }
 
     let mut best: Option<ImageBuffer> = None;
     let mut copy_err: Option<ErrorInfo> = None;
@@ -195,16 +213,9 @@ fn run_capture_loop(
             Ok(frame) => {
                 wgc_log(logger, "frame arrived");
 
-                let origin = if ctx.method == "wgc-window" || ctx.method == "wgc-window2" {
-                    ctx.window
-                        .as_ref()
-                        .map_or(ctx.capture_rect_screen, |w| w.rect)
-                } else {
-                    ctx.capture_rect_screen
-                };
-
-                match copy_frame_to_image(&frame, d3d_device, d3d_context, origin) {
-                    Ok(candidate) => {
+                match copy_frame_to_image(&frame, d3d_device, d3d_context, frame_origin(ctx)) {
+                    Ok(mut candidate) => {
+                        apply_force_alpha(ctx, &mut candidate);
                         wgc_log(
                             logger,
                             &format!("candidate size={}x{}", candidate.width, candidate.height),
@@ -283,13 +294,13 @@ pub fn capture_with_wgc(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> 
     let winrt_device = create_winrt_d3d_device(&d3d_device)?;
 
     let item =
-        if ctx.method == "wgc-window" || ctx.method == "wgc-window2" {
+        if ctx.method == "wgc-window" {
             wgc_log(logger, "create item for window");
             let window = ctx.window.as_ref().ok_or_else(|| {
                 ErrorInfo::new("wgc-window needs window target", "CaptureWithWgc")
             })?;
             create_capture_item_from_hwnd(HWND(window.hwnd as *mut core::ffi::c_void))?
-        } else if ctx.method == "wgc-monitor" || ctx.method == "wgc-monitor2" {
+        } else if ctx.method == "wgc-monitor" {
             wgc_log(logger, "create item for monitor");
             let monitor = ctx.monitor.as_ref().ok_or_else(|| {
                 ErrorInfo::new("wgc-monitor needs monitor target", "CaptureWithWgc")

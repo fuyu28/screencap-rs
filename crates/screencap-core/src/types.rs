@@ -221,7 +221,6 @@ pub struct TargetWindowQuery {
 pub struct TargetScreenQuery {
     /// Monitor index as a string, or "primary".
     pub monitor: Option<String>,
-    pub virtual_screen: bool,
 }
 
 #[derive(Clone, Debug)]

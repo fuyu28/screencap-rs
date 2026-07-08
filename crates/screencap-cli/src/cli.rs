@@ -16,7 +16,7 @@ pub struct ParsedArgs {
 #[derive(Parser, Debug)]
 #[command(
     name = "screencap-cli",
-    about = "Windows screenshot comparison CLI",
+    about = "Windows.Graphics.Capture screenshot CLI",
     disable_help_subcommand = true
 )]
 struct CliArgs {
@@ -72,7 +72,7 @@ enum ListCommand {
 #[derive(Args, Debug)]
 struct CapCli {
     #[arg(long)]
-    method: String,
+    method: Option<String>,
 
     #[arg(long, value_enum, default_value = "window")]
     target: TargetArg,
@@ -100,9 +100,6 @@ struct CapCli {
 
     #[arg(long)]
     monitor: Option<String>,
-
-    #[arg(long)]
-    virtual_screen: bool,
 
     #[arg(long, value_enum, default_value = "none")]
     crop: CropArg,
@@ -295,6 +292,28 @@ fn validation_error(message: impl Into<String>) -> clap::Error {
     clap::Error::raw(ErrorKind::ValueValidation, message.into())
 }
 
+fn default_wgc_method(target: TargetType) -> &'static str {
+    match target {
+        TargetType::Window => "wgc-window",
+        TargetType::Screen => "wgc-monitor",
+    }
+}
+
+fn validate_wgc_method(method: &str, target: TargetType) -> Result<(), clap::Error> {
+    match (method, target) {
+        ("wgc-window", TargetType::Window) | ("wgc-monitor", TargetType::Screen) => Ok(()),
+        ("wgc-window", TargetType::Screen) => Err(validation_error(
+            "wgc-window needs --target window; use wgc-monitor for screen capture",
+        )),
+        ("wgc-monitor", TargetType::Window) => Err(validation_error(
+            "wgc-monitor needs --target screen; use wgc-window for window capture",
+        )),
+        _ => Err(validation_error(
+            "only wgc-window and wgc-monitor are supported",
+        )),
+    }
+}
+
 impl CapCli {
     fn into_options(self) -> Result<CapOptions, clap::Error> {
         if self.stdout {
@@ -336,9 +355,12 @@ impl CapCli {
         };
         let screen_query = TargetScreenQuery {
             monitor: self.monitor,
-            virtual_screen: self.virtual_screen,
         };
         let target = self.target.into();
+        let method = self
+            .method
+            .unwrap_or_else(|| default_wgc_method(target).to_string());
+        validate_wgc_method(&method, target)?;
 
         if target == TargetType::Window {
             let has_window_target = window_query.hwnd.is_some()
@@ -351,10 +373,10 @@ impl CapCli {
                     "window target needs one of --hwnd/--pid/--foreground/--title/--class",
                 ));
             }
-        } else if screen_query.monitor.is_none() && !screen_query.virtual_screen {
-            return Err(validation_error(
-                "screen target needs --monitor or --virtual-screen",
-            ));
+        } else {
+            if screen_query.monitor.is_none() {
+                return Err(validation_error("screen target needs --monitor"));
+            }
         }
 
         let force_alpha_255 = match self.force_alpha {
@@ -381,7 +403,7 @@ impl CapCli {
         }
 
         Ok(CapOptions {
-            method: self.method,
+            method,
             target,
             out_path: self.out_path,
             format: self.format,
@@ -473,8 +495,6 @@ mod tests {
         let parsed = parse_args(&args(&[
             "screencap-cli",
             "cap",
-            "--method",
-            "dxgi-monitor",
             "--target",
             "screen",
             "--monitor",
@@ -485,6 +505,7 @@ mod tests {
         .expect("screen capture should parse");
 
         assert_eq!(parsed.command, CommandType::Cap);
+        assert_eq!(parsed.cap.method, "wgc-monitor");
         assert_eq!(parsed.cap.target, TargetType::Screen);
         assert_eq!(parsed.cap.screen_query.monitor.as_deref(), Some("primary"));
         assert_eq!(parsed.cap.out_path, "a.png");

@@ -4,21 +4,15 @@
 use std::time::Instant;
 
 use serde_json::{json, Map, Value};
-use windows::Win32::Foundation::{GetLastError, HWND};
-use windows::Win32::Graphics::Gdi::{MonitorFromWindow, MONITOR_DEFAULTTONEAREST};
+use windows::Win32::Foundation::GetLastError;
 use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS,
 };
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetMessageW, GetSystemMetrics, SetProcessDPIAware, MSG, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, WM_HOTKEY,
-};
+use windows::Win32::UI::WindowsAndMessaging::{GetMessageW, SetProcessDPIAware, MSG, WM_HOTKEY};
 
-use screencap_core::capture_dxgi::capture_with_dxgi;
-use screencap_core::capture_gdi::capture_with_gdi;
 use screencap_core::capture_wgc::capture_with_wgc;
 use screencap_core::crop::{crop_image_in_place, resolve_crop_rect_screen};
 use screencap_core::encode_png::save_png_wic;
@@ -227,21 +221,6 @@ fn run_list_monitors(parsed: &ParsedArgs) -> RunResult {
     rr
 }
 
-fn virtual_screen_rect() -> Rect {
-    unsafe {
-        let l = GetSystemMetrics(SM_XVIRTUALSCREEN);
-        let t = GetSystemMetrics(SM_YVIRTUALSCREEN);
-        let w = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-        let h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-        Rect {
-            left: l,
-            top: t,
-            right: l + w,
-            bottom: t + h,
-        }
-    }
-}
-
 fn run_cap(parsed: &ParsedArgs, logger: Option<&Logger>, dpi_applied: &str) -> RunResult {
     let mut rr = RunResult::default();
     let start = Instant::now();
@@ -259,14 +238,7 @@ fn run_cap(parsed: &ParsedArgs, logger: Option<&Logger>, dpi_applied: &str) -> R
         logger,
     };
 
-    let method = &parsed.cap.method;
-
-    if parsed.cap.target == TargetType::Window
-        || method.contains("window")
-        || method.contains("printwindow")
-        || method.contains("client")
-        || method.contains("windowdc")
-    {
+    if parsed.cap.target == TargetType::Window {
         match resolve_window_target(&parsed.cap.window_query, &windows, logger) {
             Ok((w, reason)) => {
                 if let Some(lg) = logger {
@@ -299,13 +271,8 @@ fn run_cap(parsed: &ParsedArgs, logger: Option<&Logger>, dpi_applied: &str) -> R
         }
     }
 
-    if parsed.cap.target == TargetType::Screen
-        || method.contains("monitor")
-        || method == "dxgi-window"
-    {
-        if parsed.cap.screen_query.virtual_screen {
-            ctx.capture_rect_screen = virtual_screen_rect();
-        } else if let Some(token) = &parsed.cap.screen_query.monitor {
+    if parsed.cap.target == TargetType::Screen {
+        if let Some(token) = &parsed.cap.screen_query.monitor {
             match find_monitor_by_token(&monitors, token) {
                 Some(mon) => {
                     ctx.capture_rect_screen = mon.desktop;
@@ -315,15 +282,6 @@ fn run_cap(parsed: &ParsedArgs, logger: Option<&Logger>, dpi_applied: &str) -> R
                     rr.err = ErrorInfo::new("monitor not found", "RunCap");
                     rr.exit_code = 1;
                     return rr;
-                }
-            }
-        } else if let Some(w) = &ctx.window {
-            let h = unsafe { MonitorFromWindow(HWND(w.hwnd as *mut _), MONITOR_DEFAULTTONEAREST) };
-            for m in &monitors {
-                if m.hmon == h.0 as isize {
-                    ctx.monitor = Some(m.clone());
-                    ctx.capture_rect_screen = m.desktop;
-                    break;
                 }
             }
         }
@@ -352,29 +310,10 @@ fn run_cap(parsed: &ParsedArgs, logger: Option<&Logger>, dpi_applied: &str) -> R
 
     let mut img: Option<ImageBuffer> = None;
     let mut cap_err = ErrorInfo::default();
-    let mut adapter_index: i32 = -1;
-    let mut output_index: i32 = -1;
     let mut cap_ok = false;
 
     for attempt in 0..=parsed.common.retry {
-        let result: Result<ImageBuffer, ErrorInfo> = if parsed.cap.method.starts_with("gdi-") {
-            capture_with_gdi(&ctx)
-        } else if parsed.cap.method.starts_with("dxgi-") {
-            match capture_with_dxgi(&ctx) {
-                Ok((buf, a, o)) => {
-                    adapter_index = a;
-                    output_index = o;
-                    Ok(buf)
-                }
-                Err(e) => Err(e),
-            }
-        } else if parsed.cap.method.starts_with("wgc-") {
-            capture_with_wgc(&ctx)
-        } else {
-            Err(ErrorInfo::new("unknown method", "RunCap"))
-        };
-
-        match result {
+        match capture_with_wgc(&ctx) {
             Ok(buf) => {
                 img = Some(buf);
                 cap_ok = true;
@@ -403,28 +342,13 @@ fn run_cap(parsed: &ParsedArgs, logger: Option<&Logger>, dpi_applied: &str) -> R
 
     let mut img = img.expect("cap_ok implies img is set");
 
-    if let Some(lg) = logger {
-        if parsed.cap.method.starts_with("dxgi-") {
-            lg.log(
-                LogLevel::Info,
-                &format!(
-                    "DXGI adapter_index={} output_index={} frame_size={}x{} row_pitch={}",
-                    adapter_index, output_index, img.width, img.height, img.row_pitch
-                ),
-            );
-        }
-    }
-
     let img_rect = Rect {
         left: img.origin_x,
         top: img.origin_y,
         right: img.origin_x + img.width,
         bottom: img.origin_y + img.height,
     };
-    let mut crop_mode = parsed.cap.crop_mode;
-    if crop_mode == CropMode::None && parsed.cap.method == "dxgi-window" {
-        crop_mode = CropMode::Window;
-    }
+    let crop_mode = parsed.cap.crop_mode;
 
     let crop_rect = match resolve_crop_rect_screen(
         crop_mode,

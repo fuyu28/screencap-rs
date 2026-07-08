@@ -1,6 +1,6 @@
 //! Win32 window-picker GUI. Lists capturable windows in a ListView, lets the
-//! user pick method/output path, and shells out to
-//! screencap-cli.exe (next to this exe) to do the actual capture.
+//! user pick an output path, and shells out to screencap-cli.exe (next to this
+//! exe) to do the actual WGC window capture.
 
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -30,9 +30,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetAncestor, GetClientRect, GetMessageW,
     GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, LoadCursorW, MessageBoxW, MoveWindow,
     PostQuitMessage, RegisterClassW, SendMessageW, SetWindowLongPtrW, SetWindowTextW, ShowWindow,
-    TranslateMessage, CBS_DROPDOWNLIST, CB_ADDSTRING, CB_GETCURSEL, CB_GETLBTEXT, CB_SETCURSEL,
-    CREATESTRUCTW, CW_USEDEFAULT, ES_AUTOHSCROLL, GA_ROOT, GWLP_USERDATA, HMENU, IDC_ARROW,
-    MB_ICONERROR, MB_ICONINFORMATION, MSG, SW_SHOW, WINDOW_STYLE, WM_COMMAND, WM_CREATE,
+    TranslateMessage, CREATESTRUCTW, CW_USEDEFAULT, ES_AUTOHSCROLL, GA_ROOT, GWLP_USERDATA, HMENU,
+    IDC_ARROW, MB_ICONERROR, MB_ICONINFORMATION, MSG, SW_SHOW, WINDOW_STYLE, WM_COMMAND, WM_CREATE,
     WM_DESTROY, WM_NCCREATE, WM_NOTIFY, WM_SIZE, WNDCLASSW, WS_CHILD, WS_EX_CLIENTEDGE,
     WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
@@ -43,18 +42,10 @@ use screencap_core::window_enum::enumerate_windows;
 
 const ID_LIST: u16 = 1001;
 const ID_REFRESH: u16 = 1002;
-const ID_METHOD: u16 = 1003;
 const ID_OUT: u16 = 1004;
 const ID_BROWSE: u16 = 1005;
 const ID_CAPTURE: u16 = 1006;
 const ID_STATUS: u16 = 1007;
-
-const METHODS: [&str; 4] = [
-    "wgc-window",
-    "gdi-printwindow",
-    "gdi-bitblt-windowdc",
-    "dxgi-window",
-];
 
 /// Per-window state. A pointer to this struct is stored in GWLP_USERDATA so the
 /// window procedure can recover its context.
@@ -63,7 +54,6 @@ struct GuiState {
     hwnd: HWND,
     list: HWND,
     refresh: HWND,
-    method: HWND,
     out: HWND,
     browse: HWND,
     capture: HWND,
@@ -128,7 +118,6 @@ fn resize_controls(state: &GuiState) {
     let button_h = 28;
     let out_h = 24;
     let status_h = 22;
-    let method_w = 150;
     let browse_w = 80;
     let capture_w = 92;
     let refresh_w = 80;
@@ -137,14 +126,6 @@ fn resize_controls(state: &GuiState) {
 
     unsafe {
         let _ = MoveWindow(state.refresh, pad, pad, refresh_w, button_h, true);
-        let _ = MoveWindow(
-            state.method,
-            pad + refresh_w + pad,
-            pad,
-            method_w,
-            180,
-            true,
-        );
         let _ = MoveWindow(
             state.capture,
             width - pad - capture_w,
@@ -330,24 +311,6 @@ fn browse_output(state: &mut GuiState) {
     }
 }
 
-fn selected_method(state: &GuiState) -> String {
-    let idx = unsafe { SendMessageW(state.method, CB_GETCURSEL, None, None) }.0 as i32;
-    if idx < 0 {
-        return "wgc-window".to_string();
-    }
-    let mut buf = [0u16; 64];
-    unsafe {
-        SendMessageW(
-            state.method,
-            CB_GETLBTEXT,
-            Some(WPARAM(idx as usize)),
-            Some(LPARAM(buf.as_mut_ptr() as isize)),
-        );
-    }
-    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-    utf8_from_wide(&buf[..len])
-}
-
 fn selected_window_index(state: &GuiState) -> Option<usize> {
     let item = unsafe {
         SendMessageW(
@@ -393,7 +356,7 @@ fn cli_exe_path() -> PathBuf {
 
 /// Shell out to screencap-cli.exe with `CREATE_NO_WINDOW` so no console flashes
 /// up.
-fn run_capture_process(window: &WindowInfo, method: &str, out_path: &str) -> Result<(), String> {
+fn run_capture_process(window: &WindowInfo, out_path: &str) -> Result<(), String> {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     let cli_path = cli_exe_path();
@@ -403,8 +366,6 @@ fn run_capture_process(window: &WindowInfo, method: &str, out_path: &str) -> Res
 
     let status = Command::new(&cli_path)
         .arg("cap")
-        .arg("--method")
-        .arg(method)
         .arg("--target")
         .arg("window")
         .arg("--hwnd")
@@ -468,8 +429,7 @@ fn capture_selected(state: &mut GuiState) {
     }
 
     let window = state.windows[idx].clone();
-    let method = selected_method(state);
-    let result = run_capture_process(&window, &method, &out_path);
+    let result = run_capture_process(&window, &out_path);
 
     unsafe {
         let _ = EnableWindow(state.capture, true);
@@ -514,39 +474,6 @@ fn create_controls(state: &mut GuiState, hwnd: HWND) {
         )
     }
     .unwrap_or_default();
-
-    state.method = unsafe {
-        CreateWindowExW(
-            Default::default(),
-            w!("COMBOBOX"),
-            PCWSTR::null(),
-            WS_CHILD | WS_VISIBLE | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
-            0,
-            0,
-            0,
-            0,
-            Some(hwnd),
-            Some(control_id(ID_METHOD)),
-            Some(instance),
-            None,
-        )
-    }
-    .unwrap_or_default();
-
-    for m in METHODS {
-        let wm = to_wide(m);
-        unsafe {
-            SendMessageW(
-                state.method,
-                CB_ADDSTRING,
-                Some(WPARAM(0)),
-                Some(LPARAM(wm.as_ptr() as isize)),
-            );
-        }
-    }
-    unsafe {
-        SendMessageW(state.method, CB_SETCURSEL, Some(WPARAM(0)), Some(LPARAM(0)));
-    }
 
     state.out = unsafe {
         CreateWindowExW(

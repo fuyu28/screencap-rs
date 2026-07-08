@@ -688,47 +688,43 @@ pub fn run() -> i32 {
     let mut logger = Logger::new();
     logger.init(&boot.log_dir, &boot.command, boot.log_level);
 
-    let parsed = cli::parse_args(&argv);
-
-    let requested_dpi = if parsed.ok {
-        parsed.args.common.dpi_mode
-    } else {
-        DpiMode::PerMonitorV2
-    };
-    let dpi_applied = apply_dpi_mode(requested_dpi, Some(&logger));
-
-    log_startup(
-        Some(&logger),
-        if parsed.ok { Some(&parsed.args) } else { None },
-        &dpi_applied,
-    );
-
-    if !parsed.ok {
-        logger.log(LogLevel::Error, &format!("parse error: {}", parsed.error));
-        if boot.json {
-            let err = ErrorInfo::new(parsed.error.clone(), "ParseArgs");
-            println!(
-                "{}",
-                build_failure_json("unknown", "", "", "", &dpi_applied, 0, &err)
-            );
-        } else {
-            eprintln!("Error: {}\n\n{}", parsed.error, cli::build_help_text());
+    let parsed = match cli::parse_args(&argv) {
+        Ok(parsed) => parsed,
+        Err(err) if cli::is_help_error(&err) => {
+            let dpi_applied = apply_dpi_mode(DpiMode::PerMonitorV2, Some(&logger));
+            log_startup(Some(&logger), None, &dpi_applied);
+            print!("{err}");
+            return 0;
         }
-        return 2;
-    }
+        Err(err) => {
+            let dpi_applied = apply_dpi_mode(DpiMode::PerMonitorV2, Some(&logger));
+            log_startup(Some(&logger), None, &dpi_applied);
+            let error = err.to_string();
+            logger.log(LogLevel::Error, &format!("parse error: {error}"));
+            if boot.json {
+                let err = ErrorInfo::new(error, "ParseArgs");
+                println!(
+                    "{}",
+                    build_failure_json("unknown", "", "", "", &dpi_applied, 0, &err)
+                );
+            } else {
+                eprint!("{err}");
+            }
+            return 2;
+        }
+    };
 
-    if parsed.show_help || parsed.args.command == CommandType::Help {
-        print!("{}", cli::build_help_text());
-        return 0;
-    }
+    let dpi_applied = apply_dpi_mode(parsed.common.dpi_mode, Some(&logger));
 
-    let rr = if parsed.args.command == CommandType::ListWindows {
-        run_list_windows(&parsed.args)
-    } else if parsed.args.command == CommandType::ListMonitors {
-        run_list_monitors(&parsed.args)
-    } else if parsed.args.cap.hotkey_enabled {
-        match wait_for_hotkey(&parsed.args, Some(&logger)) {
-            Ok(()) => run_cap(&parsed.args, Some(&logger), &dpi_applied),
+    log_startup(Some(&logger), Some(&parsed), &dpi_applied);
+
+    let rr = if parsed.command == CommandType::ListWindows {
+        run_list_windows(&parsed)
+    } else if parsed.command == CommandType::ListMonitors {
+        run_list_monitors(&parsed)
+    } else if parsed.cap.hotkey_enabled {
+        match wait_for_hotkey(&parsed, Some(&logger)) {
+            Ok(()) => run_cap(&parsed, Some(&logger), &dpi_applied),
             Err(e) => RunResult {
                 err: e,
                 exit_code: 1,
@@ -736,15 +732,15 @@ pub fn run() -> i32 {
             },
         }
     } else {
-        run_cap(&parsed.args, Some(&logger), &dpi_applied)
+        run_cap(&parsed, Some(&logger), &dpi_applied)
     };
 
     if rr.ok {
         logger.log(LogLevel::Info, "result=success");
-        if parsed.args.common.json {
+        if parsed.common.json {
             println!("{}", rr.json);
-        } else if parsed.args.command == CommandType::Cap {
-            println!("ok: {}", parsed.args.cap.out_path);
+        } else if parsed.command == CommandType::Cap {
+            println!("ok: {}", parsed.cap.out_path);
         }
         return rr.exit_code;
     }
@@ -757,8 +753,8 @@ pub fn run() -> i32 {
         ),
     );
 
-    if parsed.args.common.json || parsed.args.command == CommandType::Cap {
-        let command_str = if parsed.args.command == CommandType::Cap {
+    if parsed.common.json || parsed.command == CommandType::Cap {
+        let command_str = if parsed.command == CommandType::Cap {
             "cap"
         } else {
             "list"
@@ -767,9 +763,9 @@ pub fn run() -> i32 {
             "{}",
             build_failure_json(
                 command_str,
-                &parsed.args.cap.method,
-                cli::target_type_name(parsed.args.cap.target),
-                &parsed.args.cap.out_path,
+                &parsed.cap.method,
+                cli::target_type_name(parsed.cap.target),
+                &parsed.cap.out_path,
                 &dpi_applied,
                 0,
                 &rr.err,

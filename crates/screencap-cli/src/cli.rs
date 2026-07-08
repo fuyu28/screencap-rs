@@ -1,6 +1,5 @@
-//! Port of src/cli.cpp: hand-rolled arg parser (kept bespoke so behavior and
-//! error messages match the C++ CLI exactly).
-
+use clap::error::ErrorKind;
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use screencap_core::types::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, VK_F1, VK_SNAPSHOT, VK_SPACE,
@@ -14,129 +13,224 @@ pub struct ParsedArgs {
     pub raw_args: Vec<String>,
 }
 
-impl Default for ParsedArgs {
-    fn default() -> Self {
+#[derive(Parser, Debug)]
+#[command(
+    name = "screencap-cli",
+    about = "Windows screenshot comparison CLI",
+    disable_help_subcommand = true
+)]
+struct CliArgs {
+    #[command(flatten)]
+    common: CommonCliOptions,
+
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Args, Debug)]
+struct CommonCliOptions {
+    #[arg(long, global = true, default_value = "./logs")]
+    log_dir: String,
+
+    #[arg(long, global = true, value_enum, default_value = "info")]
+    log_level: LogLevelArg,
+
+    #[arg(long, global = true)]
+    json: bool,
+
+    #[arg(long, global = true, default_value_t = 700)]
+    timeout_ms: i32,
+
+    #[arg(long, global = true, default_value_t = 0)]
+    retry: i32,
+
+    #[arg(long, global = true)]
+    overwrite: bool,
+
+    #[arg(long, global = true, value_enum, default_value = "per-monitor-v2")]
+    dpi_mode: DpiModeArg,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    Cap(CapCli),
+    List(ListCli),
+}
+
+#[derive(Args, Debug)]
+struct ListCli {
+    #[command(subcommand)]
+    command: ListCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum ListCommand {
+    Windows,
+    Monitors,
+}
+
+#[derive(Args, Debug)]
+struct CapCli {
+    #[arg(long)]
+    method: String,
+
+    #[arg(long, value_enum, default_value = "window")]
+    target: TargetArg,
+
+    #[arg(long = "out")]
+    out_path: String,
+
+    #[arg(long)]
+    stdout: bool,
+
+    #[arg(long)]
+    hwnd: Option<u64>,
+
+    #[arg(long)]
+    pid: Option<i32>,
+
+    #[arg(long)]
+    foreground: bool,
+
+    #[arg(long)]
+    title: Option<String>,
+
+    #[arg(long = "class")]
+    class_name: Option<String>,
+
+    #[arg(long)]
+    monitor: Option<String>,
+
+    #[arg(long)]
+    virtual_screen: bool,
+
+    #[arg(long, value_enum, default_value = "none")]
+    crop: CropArg,
+
+    #[arg(long, num_args = 4, value_names = ["X", "Y", "W", "H"])]
+    crop_rect: Option<Vec<i32>>,
+
+    #[arg(long, num_args = 4, value_names = ["L", "T", "R", "B"])]
+    pad: Option<Vec<i32>>,
+
+    #[arg(long, default_value = "png")]
+    format: String,
+
+    #[arg(long)]
+    force_alpha: Option<i32>,
+
+    #[arg(long)]
+    hotkey: Option<String>,
+
+    #[arg(long)]
+    hotkey_foreground: bool,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum LogLevelArg {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum DpiModeArg {
+    Auto,
+    PerMonitorV2,
+    System,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum TargetArg {
+    Window,
+    Screen,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum CropArg {
+    None,
+    Window,
+    Client,
+    DwmFrame,
+    Manual,
+}
+
+impl From<CommonCliOptions> for CommonOptions {
+    fn from(value: CommonCliOptions) -> Self {
         Self {
-            command: CommandType::Help,
-            common: CommonOptions::default(),
-            cap: CapOptions::default(),
-            raw_args: Vec::new(),
+            log_dir: value.log_dir,
+            log_level: value.log_level.into(),
+            json: value.json,
+            timeout_ms: value.timeout_ms,
+            retry: value.retry,
+            overwrite: value.overwrite,
+            dpi_mode: value.dpi_mode.into(),
         }
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct ParseResult {
-    pub ok: bool,
-    pub show_help: bool,
-    pub args: ParsedArgs,
-    pub error: String,
-}
-
-// ---------------------------------------------------------------------------
-// small parsing helpers (mirror the free functions in the anonymous namespace
-// of src/cli.cpp)
-// ---------------------------------------------------------------------------
-
-fn need_value(i: usize, argc: usize, name: &str, err: &mut String) -> bool {
-    if i + 1 >= argc {
-        *err = format!("missing value for {name}");
-        return false;
-    }
-    true
-}
-
-/// Mirrors `strtol` used by the C++ ParseInt: optional leading whitespace,
-/// optional sign, then digits, and the whole remainder must be consumed.
-fn parse_int(s: &str) -> Option<i32> {
-    let trimmed = s.trim_start();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let bytes = trimmed.as_bytes();
-    let mut idx = 0usize;
-    if bytes[idx] == b'+' || bytes[idx] == b'-' {
-        idx += 1;
-    }
-    let digits_start = idx;
-    while idx < bytes.len() && bytes[idx].is_ascii_digit() {
-        idx += 1;
-    }
-    if idx == digits_start || idx != bytes.len() {
-        return None;
-    }
-    trimmed.parse::<i32>().ok()
-}
-
-fn parse_u64(s: &str) -> Option<u64> {
-    let trimmed = s.trim_start();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let bytes = trimmed.as_bytes();
-    let mut idx = 0usize;
-    if bytes[idx] == b'+' {
-        idx += 1;
-    }
-    let digits_start = idx;
-    while idx < bytes.len() && bytes[idx].is_ascii_digit() {
-        idx += 1;
-    }
-    if idx == digits_start || idx != bytes.len() {
-        return None;
-    }
-    trimmed.parse::<u64>().ok()
-}
-
-fn parse_dpi_mode(s: &str) -> DpiMode {
-    match s {
-        "auto" => DpiMode::Auto,
-        "system" => DpiMode::System,
-        _ => DpiMode::PerMonitorV2,
+impl From<LogLevelArg> for LogLevel {
+    fn from(value: LogLevelArg) -> Self {
+        match value {
+            LogLevelArg::Trace => LogLevel::Trace,
+            LogLevelArg::Debug => LogLevel::Debug,
+            LogLevelArg::Info => LogLevel::Info,
+            LogLevelArg::Warn => LogLevel::Warn,
+            LogLevelArg::Error => LogLevel::Error,
+        }
     }
 }
 
-fn parse_crop_mode(s: &str) -> CropMode {
-    match s {
-        "window" => CropMode::Window,
-        "client" => CropMode::Client,
-        "dwm-frame" => CropMode::DwmFrame,
-        "manual" => CropMode::Manual,
-        _ => CropMode::None,
+impl From<DpiModeArg> for DpiMode {
+    fn from(value: DpiModeArg) -> Self {
+        match value {
+            DpiModeArg::Auto => DpiMode::Auto,
+            DpiModeArg::PerMonitorV2 => DpiMode::PerMonitorV2,
+            DpiModeArg::System => DpiMode::System,
+        }
     }
 }
 
-fn to_lower_ascii(s: &str) -> String {
-    s.chars().map(|c| c.to_ascii_lowercase()).collect()
+impl From<TargetArg> for TargetType {
+    fn from(value: TargetArg) -> Self {
+        match value {
+            TargetArg::Window => TargetType::Window,
+            TargetArg::Screen => TargetType::Screen,
+        }
+    }
+}
+
+impl From<CropArg> for CropMode {
+    fn from(value: CropArg) -> Self {
+        match value {
+            CropArg::None => CropMode::None,
+            CropArg::Window => CropMode::Window,
+            CropArg::Client => CropMode::Client,
+            CropArg::DwmFrame => CropMode::DwmFrame,
+            CropArg::Manual => CropMode::Manual,
+        }
+    }
 }
 
 fn parse_function_key(token: &str) -> Option<u32> {
-    if token.len() < 2 || !token.starts_with('f') {
-        return None;
-    }
-    let n = parse_int(&token[1..])?;
-    if !(1..=24).contains(&n) {
-        return None;
-    }
-    Some(VK_F1.0 as u32 + (n - 1) as u32)
+    let n = token.strip_prefix('f')?.parse::<i32>().ok()?;
+    (1..=24)
+        .contains(&n)
+        .then_some(VK_F1.0 as u32 + (n - 1) as u32)
 }
 
-/// Mirrors ParseHotkey's `std::getline(iss, token, '+')` splitting: a
-/// trailing '+' does not produce a spurious empty final token (the stream is
-/// already at eof at that point), but any other empty token (leading or
-/// consecutive '+') is rejected, just like the C++ version.
 fn parse_hotkey(spec: &str) -> Option<(u32, u32)> {
     let mut mods: u32 = MOD_NOREPEAT.0;
     let mut vk: u32 = 0;
     let mut has_modifier = false;
 
-    let mut tokens: Vec<&str> = spec.split('+').collect();
-    if spec.ends_with('+') {
-        tokens.pop();
-    }
-
-    for raw in tokens {
-        let token = to_lower_ascii(raw);
+    for token in spec
+        .trim_end_matches('+')
+        .split('+')
+        .map(str::to_ascii_lowercase)
+    {
         if token.is_empty() {
             return None;
         }
@@ -169,7 +263,7 @@ fn parse_hotkey(spec: &str) -> Option<(u32, u32)> {
             return None;
         }
 
-        if token.chars().count() == 1 {
+        if token.len() == 1 {
             let c = token.as_bytes()[0];
             if c.is_ascii_lowercase() {
                 vk = (b'A' as u32) + (c - b'a') as u32;
@@ -188,343 +282,156 @@ fn parse_hotkey(spec: &str) -> Option<(u32, u32)> {
         }
 
         match token.as_str() {
-            "printscreen" | "prtsc" | "snapshot" => {
-                vk = VK_SNAPSHOT.0 as u32;
-                continue;
-            }
-            "space" => {
-                vk = VK_SPACE.0 as u32;
-                continue;
-            }
-            _ => {}
+            "printscreen" | "prtsc" | "snapshot" => vk = VK_SNAPSHOT.0 as u32,
+            "space" => vk = VK_SPACE.0 as u32,
+            _ => return None,
         }
-
-        return None;
     }
 
-    if has_modifier && vk != 0 {
-        Some((mods, vk))
-    } else {
-        None
+    (has_modifier && vk != 0).then_some((mods, vk))
+}
+
+fn validation_error(message: impl Into<String>) -> clap::Error {
+    clap::Error::raw(ErrorKind::ValueValidation, message.into())
+}
+
+impl CapCli {
+    fn into_options(self) -> Result<CapOptions, clap::Error> {
+        if self.stdout {
+            return Err(validation_error(
+                "--stdout is not supported in this version",
+            ));
+        }
+        if self.format != "png" {
+            return Err(validation_error("only --format png is supported"));
+        }
+
+        let crop_rect = self.crop_rect.map(|values| CropRect {
+            x: values[0],
+            y: values[1],
+            w: values[2],
+            h: values[3],
+        });
+        let crop_mode = self.crop.into();
+        if crop_mode == CropMode::Manual && crop_rect.is_none() {
+            return Err(validation_error("manual crop needs --crop-rect"));
+        }
+
+        let pad = self
+            .pad
+            .map(|values| Pad {
+                l: values[0],
+                t: values[1],
+                r: values[2],
+                b: values[3],
+            })
+            .unwrap_or_default();
+
+        let mut window_query = TargetWindowQuery {
+            hwnd: self.hwnd,
+            pid: self.pid,
+            foreground: self.foreground,
+            title: self.title,
+            class_name: self.class_name,
+        };
+        let screen_query = TargetScreenQuery {
+            monitor: self.monitor,
+            virtual_screen: self.virtual_screen,
+        };
+        let target = self.target.into();
+
+        if target == TargetType::Window {
+            let has_window_target = window_query.hwnd.is_some()
+                || window_query.pid.is_some()
+                || window_query.foreground
+                || window_query.title.is_some()
+                || window_query.class_name.is_some();
+            if !has_window_target {
+                return Err(validation_error(
+                    "window target needs one of --hwnd/--pid/--foreground/--title/--class",
+                ));
+            }
+        } else if screen_query.monitor.is_none() && !screen_query.virtual_screen {
+            return Err(validation_error(
+                "screen target needs --monitor or --virtual-screen",
+            ));
+        }
+
+        let force_alpha_255 = match self.force_alpha {
+            Some(255) => true,
+            Some(_) => return Err(validation_error("--force-alpha only supports 255")),
+            None => false,
+        };
+
+        let (hotkey_enabled, hotkey_spec, hotkey_modifiers, hotkey_vk) = match self.hotkey {
+            Some(spec) => {
+                let (mods, vk) = parse_hotkey(&spec).ok_or_else(|| {
+                    validation_error("invalid --hotkey (ex: ctrl+shift+s, alt+f9)")
+                })?;
+                (true, spec, mods, vk)
+            }
+            None if self.hotkey_foreground => {
+                return Err(validation_error("--hotkey-foreground needs --hotkey"));
+            }
+            None => (false, String::new(), 0, 0),
+        };
+
+        if self.hotkey_foreground {
+            window_query.foreground = true;
+        }
+
+        Ok(CapOptions {
+            method: self.method,
+            target,
+            out_path: self.out_path,
+            format: self.format,
+            hotkey_enabled,
+            hotkey_spec,
+            hotkey_modifiers,
+            hotkey_vk,
+            hotkey_foreground: self.hotkey_foreground,
+            window_query,
+            screen_query,
+            crop_mode,
+            crop_rect,
+            pad,
+            force_alpha_255,
+        })
     }
 }
 
-/// Full CLI grammar of the C++ ParseArgs, including validation
-/// (cap needs --method/--out, window target needs a query, --format png only,
-/// manual crop needs --crop-rect, --hotkey-foreground needs --hotkey, hotkey
-/// spec parsing like ctrl+shift+s / alt+f9).
-pub fn parse_args(argv: &[String]) -> ParseResult {
-    let argc = argv.len();
-    let mut r = ParseResult::default();
-
-    if argc <= 1 {
-        r.show_help = true;
-        r.ok = true;
-        return r;
+pub fn parse_args(argv: &[String]) -> Result<ParsedArgs, clap::Error> {
+    if argv.len() <= 1 || argv.get(1).is_some_and(|arg| arg == "help") {
+        let mut command = CliArgs::command();
+        let help = command.render_long_help().to_string();
+        return Err(command.error(ErrorKind::DisplayHelp, help));
     }
 
-    let mut out = ParsedArgs {
-        raw_args: argv.to_vec(),
-        ..Default::default()
+    let cli = CliArgs::try_parse_from(argv)?;
+    let raw_args = argv.to_vec();
+    let common = cli.common.into();
+
+    let (command, cap) = match cli.command {
+        Commands::Cap(cap) => (CommandType::Cap, cap.into_options()?),
+        Commands::List(list) => match list.command {
+            ListCommand::Windows => (CommandType::ListWindows, CapOptions::default()),
+            ListCommand::Monitors => (CommandType::ListMonitors, CapOptions::default()),
+        },
     };
 
-    let mut i = 1usize;
-    let cmd = argv[i].clone();
-    i += 1;
-
-    if cmd == "cap" {
-        out.command = CommandType::Cap;
-    } else if cmd == "list" {
-        if i >= argc {
-            r.error = "list needs subcommand: windows|monitors".to_string();
-            return r;
-        }
-        let sub = argv[i].clone();
-        i += 1;
-        if sub == "windows" {
-            out.command = CommandType::ListWindows;
-        } else if sub == "monitors" {
-            out.command = CommandType::ListMonitors;
-        } else {
-            r.error = format!("unknown list subcommand: {sub}");
-            return r;
-        }
-    } else if cmd == "-h" || cmd == "--help" || cmd == "help" {
-        r.show_help = true;
-        r.ok = true;
-        return r;
-    } else {
-        r.error = format!("unknown command: {cmd}");
-        return r;
-    }
-
-    while i < argc {
-        let a = argv[i].clone();
-        let is_cap = out.command == CommandType::Cap;
-
-        if a == "--log-dir" {
-            if !need_value(i, argc, &a, &mut r.error) {
-                return r;
-            }
-            i += 1;
-            out.common.log_dir = argv[i].clone();
-        } else if a == "--log-level" {
-            if !need_value(i, argc, &a, &mut r.error) {
-                return r;
-            }
-            i += 1;
-            out.common.log_level = screencap_core::logging::parse_log_level(&argv[i]);
-        } else if a == "--json" {
-            out.common.json = true;
-        } else if a == "--timeout-ms" {
-            if !need_value(i, argc, &a, &mut r.error) {
-                return r;
-            }
-            i += 1;
-            match parse_int(&argv[i]) {
-                Some(v) => out.common.timeout_ms = v,
-                None => {
-                    r.error = "invalid --timeout-ms".to_string();
-                    return r;
-                }
-            }
-        } else if a == "--retry" {
-            if !need_value(i, argc, &a, &mut r.error) {
-                return r;
-            }
-            i += 1;
-            match parse_int(&argv[i]) {
-                Some(v) => out.common.retry = v,
-                None => {
-                    r.error = "invalid --retry".to_string();
-                    return r;
-                }
-            }
-        } else if a == "--overwrite" {
-            out.common.overwrite = true;
-        } else if a == "--dpi-mode" {
-            if !need_value(i, argc, &a, &mut r.error) {
-                return r;
-            }
-            i += 1;
-            out.common.dpi_mode = parse_dpi_mode(&argv[i]);
-        } else if is_cap && a == "--method" {
-            if !need_value(i, argc, &a, &mut r.error) {
-                return r;
-            }
-            i += 1;
-            out.cap.method = argv[i].clone();
-        } else if is_cap && a == "--target" {
-            if !need_value(i, argc, &a, &mut r.error) {
-                return r;
-            }
-            i += 1;
-            let v = argv[i].clone();
-            if v == "window" {
-                out.cap.target = TargetType::Window;
-            } else if v == "screen" {
-                out.cap.target = TargetType::Screen;
-            } else {
-                r.error = "invalid --target".to_string();
-                return r;
-            }
-        } else if is_cap && a == "--out" {
-            if !need_value(i, argc, &a, &mut r.error) {
-                return r;
-            }
-            i += 1;
-            out.cap.out_path = argv[i].clone();
-        } else if is_cap && a == "--stdout" {
-            r.error = "--stdout is not supported in this version".to_string();
-            return r;
-        } else if is_cap && a == "--hwnd" {
-            if !need_value(i, argc, &a, &mut r.error) {
-                return r;
-            }
-            i += 1;
-            match parse_u64(&argv[i]) {
-                Some(v) => out.cap.window_query.hwnd = Some(v),
-                None => {
-                    r.error = "invalid --hwnd".to_string();
-                    return r;
-                }
-            }
-        } else if is_cap && a == "--pid" {
-            if !need_value(i, argc, &a, &mut r.error) {
-                return r;
-            }
-            i += 1;
-            match parse_int(&argv[i]) {
-                Some(v) => out.cap.window_query.pid = Some(v),
-                None => {
-                    r.error = "invalid --pid".to_string();
-                    return r;
-                }
-            }
-        } else if is_cap && a == "--foreground" {
-            out.cap.window_query.foreground = true;
-        } else if is_cap && a == "--title" {
-            if !need_value(i, argc, &a, &mut r.error) {
-                return r;
-            }
-            i += 1;
-            out.cap.window_query.title = Some(argv[i].clone());
-        } else if is_cap && a == "--class" {
-            if !need_value(i, argc, &a, &mut r.error) {
-                return r;
-            }
-            i += 1;
-            out.cap.window_query.class_name = Some(argv[i].clone());
-        } else if is_cap && a == "--monitor" {
-            if !need_value(i, argc, &a, &mut r.error) {
-                return r;
-            }
-            i += 1;
-            out.cap.screen_query.monitor = Some(argv[i].clone());
-        } else if is_cap && a == "--virtual-screen" {
-            out.cap.screen_query.virtual_screen = true;
-        } else if is_cap && a == "--crop" {
-            if !need_value(i, argc, &a, &mut r.error) {
-                return r;
-            }
-            i += 1;
-            out.cap.crop_mode = parse_crop_mode(&argv[i]);
-        } else if is_cap && a == "--crop-rect" {
-            if i + 4 >= argc {
-                r.error = "--crop-rect needs 4 values".to_string();
-                return r;
-            }
-            let x = parse_int(&argv[i + 1]);
-            let y = parse_int(&argv[i + 2]);
-            let w = parse_int(&argv[i + 3]);
-            let h = parse_int(&argv[i + 4]);
-            match (x, y, w, h) {
-                (Some(x), Some(y), Some(w), Some(h)) => {
-                    out.cap.crop_rect = Some(CropRect { x, y, w, h });
-                    i += 4;
-                }
-                _ => {
-                    r.error = "invalid --crop-rect".to_string();
-                    return r;
-                }
-            }
-        } else if is_cap && a == "--pad" {
-            if i + 4 >= argc {
-                r.error = "--pad needs 4 values".to_string();
-                return r;
-            }
-            let l = parse_int(&argv[i + 1]);
-            let t = parse_int(&argv[i + 2]);
-            let rr = parse_int(&argv[i + 3]);
-            let b = parse_int(&argv[i + 4]);
-            match (l, t, rr, b) {
-                (Some(l), Some(t), Some(rr), Some(b)) => {
-                    out.cap.pad = Pad { l, t, r: rr, b };
-                    i += 4;
-                }
-                _ => {
-                    r.error = "invalid --pad".to_string();
-                    return r;
-                }
-            }
-        } else if is_cap && a == "--format" {
-            if !need_value(i, argc, &a, &mut r.error) {
-                return r;
-            }
-            i += 1;
-            out.cap.format = argv[i].clone();
-        } else if is_cap && a == "--force-alpha" {
-            if !need_value(i, argc, &a, &mut r.error) {
-                return r;
-            }
-            i += 1;
-            match parse_int(&argv[i]) {
-                Some(255) => out.cap.force_alpha_255 = true,
-                _ => {
-                    r.error = "--force-alpha only supports 255".to_string();
-                    return r;
-                }
-            }
-        } else if is_cap && a == "--hotkey" {
-            if !need_value(i, argc, &a, &mut r.error) {
-                return r;
-            }
-            i += 1;
-            out.cap.hotkey_spec = argv[i].clone();
-            match parse_hotkey(&out.cap.hotkey_spec) {
-                Some((mods, vk)) => {
-                    out.cap.hotkey_modifiers = mods;
-                    out.cap.hotkey_vk = vk;
-                }
-                None => {
-                    r.error = "invalid --hotkey (ex: ctrl+shift+s, alt+f9)".to_string();
-                    return r;
-                }
-            }
-            out.cap.hotkey_enabled = true;
-        } else if is_cap && a == "--hotkey-foreground" {
-            out.cap.hotkey_foreground = true;
-            out.cap.window_query.foreground = true;
-        } else {
-            r.error = format!("unknown option: {a}");
-            return r;
-        }
-
-        i += 1;
-    }
-
-    if out.command == CommandType::Cap {
-        if out.cap.method.is_empty() {
-            r.error = "cap needs --method".to_string();
-            return r;
-        }
-        if out.cap.out_path.is_empty() {
-            r.error = "cap needs --out".to_string();
-            return r;
-        }
-        if out.cap.format != "png" {
-            r.error = "only --format png is supported".to_string();
-            return r;
-        }
-        if out.cap.target == TargetType::Window {
-            let has_window_target = out.cap.window_query.hwnd.is_some()
-                || out.cap.window_query.pid.is_some()
-                || out.cap.window_query.foreground
-                || out.cap.window_query.title.is_some()
-                || out.cap.window_query.class_name.is_some();
-            if !has_window_target {
-                r.error = "window target needs one of --hwnd/--pid/--foreground/--title/--class"
-                    .to_string();
-                return r;
-            }
-        } else if out.cap.screen_query.monitor.is_none() && !out.cap.screen_query.virtual_screen {
-            r.error = "screen target needs --monitor or --virtual-screen".to_string();
-            return r;
-        }
-        if out.cap.crop_mode == CropMode::Manual && out.cap.crop_rect.is_none() {
-            r.error = "manual crop needs --crop-rect".to_string();
-            return r;
-        }
-        if out.cap.hotkey_foreground && !out.cap.hotkey_enabled {
-            r.error = "--hotkey-foreground needs --hotkey".to_string();
-            return r;
-        }
-    }
-
-    r.ok = true;
-    r.args = out;
-    r
+    Ok(ParsedArgs {
+        command,
+        common,
+        cap,
+        raw_args,
+    })
 }
 
-/// Not exercised by the run flow (mirrors DpiModeName, which src/main.cpp
-/// never calls either), kept as part of the frozen public surface.
-#[allow(dead_code)]
-pub fn dpi_mode_name(mode: DpiMode) -> &'static str {
-    match mode {
-        DpiMode::Auto => "auto",
-        DpiMode::PerMonitorV2 => "per-monitor-v2",
-        DpiMode::System => "system",
-    }
+pub fn is_help_error(err: &clap::Error) -> bool {
+    matches!(
+        err.kind(),
+        ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+    )
 }
 
 pub fn target_type_name(t: TargetType) -> &'static str {
@@ -542,19 +449,4 @@ pub fn crop_mode_name(m: CropMode) -> &'static str {
         CropMode::DwmFrame => "dwm-frame",
         CropMode::Manual => "manual",
     }
-}
-
-pub fn build_help_text() -> String {
-    concat!(
-        "screencap-cli - Windows screenshot comparison CLI\n\n",
-        "Commands:\n",
-        "  cap\n",
-        "  list windows\n",
-        "  list monitors\n\n",
-        "Examples:\n",
-        "  screencap-cli list windows --json\n",
-        "  screencap-cli cap --method dxgi-monitor --target screen --monitor primary --out a.png\n",
-        "  screencap-cli cap --method wgc-window --target window --foreground --hotkey ctrl+shift+s --out a.png\n",
-    )
-    .to_string()
 }

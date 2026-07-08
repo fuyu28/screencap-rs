@@ -1,0 +1,8 @@
+[package]
+name = "screencap-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+windows = { workspace = true }
+chrono = { workspace = true }

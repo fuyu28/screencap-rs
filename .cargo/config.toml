@@ -1,0 +1,4 @@
+# Windows-only project. Setting the default target lets `cargo check` type-check
+# on non-Windows hosts too (linking still requires a Windows machine).
+[build]
+target = "x86_64-pc-windows-msvc"

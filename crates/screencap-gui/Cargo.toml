@@ -1,0 +1,12 @@
+[package]
+name = "screencap-gui"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "screencap"
+path = "src/main.rs"
+
+[dependencies]
+screencap-core = { path = "../screencap-core" }
+windows = { workspace = true }

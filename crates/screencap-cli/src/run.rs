@@ -27,7 +27,7 @@ use screencap_core::image_stats::compute_image_stats;
 use screencap_core::logging::{get_build_stamp, get_os_version_string, Logger};
 use screencap_core::monitor_enum::{enumerate_monitors, find_monitor_by_token};
 use screencap_core::types::*;
-use screencap_core::util::{iso8601_now_local, to_hex32};
+use screencap_core::util::iso8601_now_local;
 use screencap_core::window_enum::{enumerate_windows, resolve_window_target};
 
 use crate::cli::{self, ParsedArgs};
@@ -93,24 +93,6 @@ fn pre_parse_bootstrap(argv: &[String]) -> BootstrapOptions {
     b
 }
 
-fn rect_json(r: Rect) -> Value {
-    json!({
-        "left": r.left,
-        "top": r.top,
-        "right": r.right,
-        "bottom": r.bottom,
-    })
-}
-
-fn crop_rect_json(r: CropRect) -> Value {
-    json!({
-        "x": r.x,
-        "y": r.y,
-        "w": r.w,
-        "h": r.h,
-    })
-}
-
 /// Returns the applied DPI mode string ("per-monitor-v2" or "system").
 fn apply_dpi_mode(requested: DpiMode, logger: Option<&Logger>) -> String {
     fn set_system() -> String {
@@ -138,26 +120,13 @@ fn apply_dpi_mode(requested: DpiMode, logger: Option<&Logger>) -> String {
     set_system()
 }
 
-fn error_json(err: &ErrorInfo) -> Value {
-    let mut out = Map::new();
-    out.insert("message".to_string(), json!(&err.message));
-    out.insert("where".to_string(), json!(&err.where_));
-    if let Some(hr) = err.hresult {
-        out.insert("hresult".to_string(), json!(to_hex32(hr)));
-    }
-    if let Some(w) = err.win32_error {
-        out.insert("win32_error".to_string(), json!(w));
-    }
-    Value::Object(out)
-}
-
 fn window_json(w: &WindowInfo) -> Value {
     json!({
         "hwnd": w.hwnd as u64,
         "pid": w.pid,
         "title": &w.title,
         "class": &w.class_name,
-        "rect": rect_json(w.rect),
+        "rect": w.rect,
         "visible": w.visible,
         "iconic": w.iconic,
         "cloaked": w.cloaked,
@@ -171,7 +140,7 @@ fn cap_window_json(w: &WindowInfo) -> Value {
     };
     out.insert(
         "client_rect_screen".to_string(),
-        rect_json(w.client_rect_screen),
+        json!(w.client_rect_screen),
     );
     Value::Object(out)
 }
@@ -180,7 +149,7 @@ fn list_monitor_json(m: &MonitorInfo) -> Value {
     json!({
         "index": m.index,
         "name": &m.name,
-        "desktop": rect_json(m.desktop),
+        "desktop": m.desktop,
         "primary": m.primary,
     })
 }
@@ -188,7 +157,7 @@ fn list_monitor_json(m: &MonitorInfo) -> Value {
 fn cap_monitor_json(m: &MonitorInfo) -> Value {
     json!({
         "index": m.index,
-        "desktop": rect_json(m.desktop),
+        "desktop": m.desktop,
         "primary": m.primary,
     })
 }
@@ -534,23 +503,11 @@ fn run_cap(parsed: &ParsedArgs, logger: Option<&Logger>, dpi_applied: &str) -> R
         "crop".to_string(),
         json!({
             "mode": cli::crop_mode_name(crop_mode),
-            "rect": crop_rect_json(crop_out),
-            "pad": {
-                "l": parsed.cap.pad.l,
-                "t": parsed.cap.pad.t,
-                "r": parsed.cap.pad.r,
-                "b": parsed.cap.pad.b,
-            },
+            "rect": crop_out,
+            "pad": parsed.cap.pad,
         }),
     );
-    js.insert(
-        "image_stats".to_string(),
-        json!({
-            "black_ratio": stats.black_ratio,
-            "transparent_ratio": stats.transparent_ratio,
-            "avg_luma": stats.avg_luma,
-        }),
-    );
+    js.insert("image_stats".to_string(), json!(stats));
     js.insert("error".to_string(), Value::Null);
 
     rr.ok = true;
@@ -607,7 +564,7 @@ fn build_failure_json(
         "monitor": Value::Null,
         "crop": Value::Null,
         "image_stats": Value::Null,
-        "error": error_json(err),
+        "error": err,
     })
     .to_string()
 }

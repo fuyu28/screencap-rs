@@ -1,12 +1,21 @@
-//! Shared types. Mirrors the C++ implementation:
-//! common.h, cli.h, logging.h, window_enum.h, monitor_enum.h, capture.h.
-//!
 //! HWND/HMONITOR are stored as `isize` so these structs stay Send/Sync and
 //! serialize directly into the JSON output; convert at Win32 call sites.
 
+use serde::{Serialize, Serializer};
+
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+fn serialize_hresult<S>(value: &Option<u32>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match value {
+        Some(hr) => serializer.serialize_some(&format!("0x{hr:08X}")),
+        None => serializer.serialize_none(),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Rect {
     pub left: i32,
     pub top: i32,
@@ -26,7 +35,7 @@ impl Rect {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct CropRect {
     pub x: i32,
     pub y: i32,
@@ -34,7 +43,7 @@ pub struct CropRect {
     pub h: i32,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Pad {
     pub l: i32,
     pub t: i32,
@@ -42,13 +51,17 @@ pub struct Pad {
     pub b: i32,
 }
 
-/// Error carried through capture/encode paths. `where_` maps to the C++
-/// `where` field and the `"where"` key in JSON output.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct ErrorInfo {
     pub message: String,
+    #[serde(rename = "where")]
     pub where_: String,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_hresult"
+    )]
     pub hresult: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub win32_error: Option<u32>,
 }
 
@@ -87,18 +100,19 @@ pub struct ImageBuffer {
     pub bgra: Vec<u8>,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Serialize)]
 pub struct ImageStats {
     pub black_ratio: f64,
     pub transparent_ratio: f64,
     pub avg_luma: f64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct WindowInfo {
     pub hwnd: isize,
     pub pid: u32,
     pub title: String,
+    #[serde(rename = "class")]
     pub class_name: String,
     pub rect: Rect,
     pub client_rect_screen: Rect,
@@ -108,7 +122,7 @@ pub struct WindowInfo {
     pub cloaked: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct MonitorInfo {
     pub hmon: isize,
     pub index: i32,

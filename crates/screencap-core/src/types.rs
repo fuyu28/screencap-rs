@@ -4,7 +4,7 @@
 //! HWND/HMONITOR are stored as `isize` so these structs stay Send/Sync and
 //! serialize directly into the JSON output; convert at Win32 call sites.
 
-pub const VERSION: &str = "0.1.0";
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Rect {

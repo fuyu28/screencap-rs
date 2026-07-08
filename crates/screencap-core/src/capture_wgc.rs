@@ -4,8 +4,350 @@
 //! frames until one passes the usable-frame heuristic
 //! (transparent_ratio < 0.98 && black_ratio < 0.98).
 
-use crate::types::{CaptureContext, ErrorInfo, ImageBuffer};
+use std::sync::mpsc;
+use std::time::Duration;
 
-pub fn capture_with_wgc(_ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> {
-    todo!("port CaptureWithWgc")
+use windows::core::{IInspectable, Interface};
+use windows::Foundation::TypedEventHandler;
+use windows::Graphics::Capture::{
+    Direct3D11CaptureFrame, Direct3D11CaptureFramePool, GraphicsCaptureItem,
+    GraphicsCaptureSession,
+};
+use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
+use windows::Graphics::DirectX::DirectXPixelFormat;
+use windows::Win32::Foundation::{HMODULE, HWND};
+use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
+use windows::Win32::Graphics::Direct3D11::{
+    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_BOX,
+    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAPPED_SUBRESOURCE,
+    D3D11_MAP_READ, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
+};
+use windows::Win32::Graphics::Dxgi::IDXGIDevice;
+use windows::Win32::Graphics::Gdi::HMONITOR;
+use windows::Win32::System::WinRT::Direct3D11::{
+    CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
+};
+use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
+use windows::Win32::System::WinRT::{RoInitialize, RO_INIT_MULTITHREADED};
+
+use crate::logging::Logger;
+use crate::types::{CaptureContext, ErrorInfo, ImageBuffer, LogLevel, Rect};
+
+const MAX_FRAMES: usize = 5;
+
+fn to_err(e: windows::core::Error, where_: &str) -> ErrorInfo {
+    ErrorInfo::with_hresult(e.message(), where_, e.code().0 as u32)
+}
+
+/// For call sites where the C++ used a fixed message instead of the system
+/// HRESULT message — keeps JSON/log error output identical to the original.
+fn to_err_with(message: &str, where_: &str, e: &windows::core::Error) -> ErrorInfo {
+    ErrorInfo::with_hresult(message, where_, e.code().0 as u32)
+}
+
+fn wgc_log(logger: Option<&Logger>, msg: &str) {
+    if let Some(l) = logger {
+        l.log(LogLevel::Debug, &format!("wgc: {msg}"));
+    }
+}
+
+fn create_winrt_d3d_device(d3d_device: &ID3D11Device) -> Result<IDirect3DDevice, ErrorInfo> {
+    let dxgi_device: IDXGIDevice = d3d_device
+        .cast()
+        .map_err(|e| to_err_with("QueryInterface IDXGIDevice failed", "CreateWinRtD3DDevice", &e))?;
+    let inspectable: IInspectable = unsafe { CreateDirect3D11DeviceFromDXGIDevice(&dxgi_device) }
+        .map_err(|e| {
+            to_err_with(
+                "CreateDirect3D11DeviceFromDXGIDevice failed",
+                "CreateWinRtD3DDevice",
+                &e,
+            )
+        })?;
+    inspectable
+        .cast::<IDirect3DDevice>()
+        .map_err(|e| to_err(e, "CreateWinRtD3DDevice"))
+}
+
+fn create_capture_item_from_hwnd(hwnd: HWND) -> Result<GraphicsCaptureItem, ErrorInfo> {
+    let interop: IGraphicsCaptureItemInterop =
+        windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()
+            .map_err(|e| to_err(e, "CreateCaptureItemFromHwnd"))?;
+    unsafe { interop.CreateForWindow::<GraphicsCaptureItem>(hwnd) }
+        .map_err(|e| to_err_with("CreateForWindow failed", "CreateCaptureItemFromHwnd", &e))
+}
+
+fn create_capture_item_from_monitor(hmon: HMONITOR) -> Result<GraphicsCaptureItem, ErrorInfo> {
+    let interop: IGraphicsCaptureItemInterop =
+        windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()
+            .map_err(|e| to_err(e, "CreateCaptureItemFromMonitor"))?;
+    unsafe { interop.CreateForMonitor::<GraphicsCaptureItem>(hmon) }
+        .map_err(|e| to_err_with("CreateForMonitor failed", "CreateCaptureItemFromMonitor", &e))
+}
+
+/// Copies a captured frame into a plain BGRA buffer, cropped to the frame's
+/// reported `ContentSize` (WGC pads the underlying texture to the swapchain
+/// size, so the content can be smaller than the texture).
+fn copy_frame_to_image(
+    frame: &Direct3D11CaptureFrame,
+    device: &ID3D11Device,
+    context: &ID3D11DeviceContext,
+    origin_rect: Rect,
+) -> Result<ImageBuffer, ErrorInfo> {
+    let surface = frame.Surface().map_err(|e| to_err(e, "CopyFrameToImage"))?;
+    let access: IDirect3DDxgiInterfaceAccess =
+        surface.cast().map_err(|e| to_err(e, "CopyFrameToImage"))?;
+    let tex: ID3D11Texture2D = unsafe { access.GetInterface::<ID3D11Texture2D>() }.map_err(|e| {
+        to_err_with("GetInterface(ID3D11Texture2D) failed", "CopyFrameToImage", &e)
+    })?;
+
+    let mut desc = D3D11_TEXTURE2D_DESC::default();
+    unsafe { tex.GetDesc(&mut desc) };
+
+    let content_size = frame
+        .ContentSize()
+        .map_err(|e| to_err(e, "CopyFrameToImage"))?;
+    if content_size.Width <= 0 || content_size.Height <= 0 {
+        return Err(ErrorInfo::new(
+            "invalid WGC ContentSize",
+            "CopyFrameToImage",
+        ));
+    }
+    desc.Width = desc.Width.min(content_size.Width as u32);
+    desc.Height = desc.Height.min(content_size.Height as u32);
+    desc.BindFlags = 0;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+    desc.MiscFlags = 0;
+    desc.Usage = D3D11_USAGE_STAGING;
+
+    let mut staging: Option<ID3D11Texture2D> = None;
+    unsafe { device.CreateTexture2D(&desc, None, Some(&mut staging)) }
+        .map_err(|e| to_err_with("CreateTexture2D staging failed", "CopyFrameToImage", &e))?;
+    let staging =
+        staging.ok_or_else(|| ErrorInfo::new("CreateTexture2D staging failed", "CopyFrameToImage"))?;
+
+    let src_box = D3D11_BOX {
+        left: 0,
+        top: 0,
+        front: 0,
+        right: desc.Width,
+        bottom: desc.Height,
+        back: 1,
+    };
+    unsafe {
+        context.CopySubresourceRegion(&staging, 0, 0, 0, 0, &tex, 0, Some(&src_box));
+    }
+
+    let mut map = D3D11_MAPPED_SUBRESOURCE::default();
+    unsafe { context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut map)) }
+        .map_err(|e| to_err_with("Map staging failed", "CopyFrameToImage", &e))?;
+
+    let width = desc.Width as i32;
+    let height = desc.Height as i32;
+    let row_pitch = width * 4;
+    let mut bgra = vec![0u8; (row_pitch as usize) * (height as usize)];
+    unsafe {
+        for y in 0..height {
+            let src = (map.pData as *const u8).add((y as usize) * (map.RowPitch as usize));
+            let dst = bgra.as_mut_ptr().add((y as usize) * (row_pitch as usize));
+            std::ptr::copy_nonoverlapping(src, dst, row_pitch as usize);
+        }
+        context.Unmap(&staging, 0);
+    }
+
+    Ok(ImageBuffer {
+        width,
+        height,
+        row_pitch,
+        origin_x: origin_rect.left,
+        origin_y: origin_rect.top,
+        bgra,
+    })
+}
+
+fn is_probably_usable_frame(img: &ImageBuffer) -> bool {
+    let stats = crate::image_stats::compute_image_stats(img);
+    stats.transparent_ratio < 0.98 && stats.black_ratio < 0.98
+}
+
+/// Registers `FrameArrived`, starts the session, and pumps up to
+/// `MAX_FRAMES` frames looking for a usable one. `FrameArrived` fires on a
+/// free-threaded frame-pool worker thread; the handler only forwards the
+/// frame through an `mpsc` channel (no logging, no shared mutable state), so
+/// all real work -- including every `Logger` call -- happens back here on
+/// the calling thread. This keeps the handoff race-free without needing the
+/// mutex the C++ implementation uses for the same purpose.
+fn run_capture_loop(
+    ctx: &CaptureContext,
+    logger: Option<&Logger>,
+    frame_pool: &Direct3D11CaptureFramePool,
+    session: &GraphicsCaptureSession,
+    d3d_device: &ID3D11Device,
+    d3d_context: &ID3D11DeviceContext,
+) -> Result<ImageBuffer, ErrorInfo> {
+    let (tx, rx) = mpsc::channel::<Direct3D11CaptureFrame>();
+    let handler = TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(
+        move |sender, _args| {
+            if let Some(pool) = sender.as_ref() {
+                if let Ok(frame) = pool.TryGetNextFrame() {
+                    let _ = tx.send(frame);
+                }
+            }
+            Ok(())
+        },
+    );
+    let token = frame_pool
+        .FrameArrived(&handler)
+        .map_err(|e| to_err(e, "CaptureWithWgc"))?;
+
+    wgc_log(logger, "start capture");
+    session
+        .StartCapture()
+        .map_err(|e| to_err(e, "CaptureWithWgc"))?;
+
+    let mut best: Option<ImageBuffer> = None;
+    let mut copy_err: Option<ErrorInfo> = None;
+    let timeout = Duration::from_millis(ctx.common.timeout_ms.max(0) as u64);
+
+    for _ in 0..MAX_FRAMES {
+        match rx.recv_timeout(timeout) {
+            Ok(frame) => {
+                wgc_log(logger, "frame arrived");
+
+                let origin = if ctx.method == "wgc-window" || ctx.method == "wgc-window2" {
+                    ctx.window
+                        .as_ref()
+                        .map_or(ctx.capture_rect_screen, |w| w.rect)
+                } else {
+                    ctx.capture_rect_screen
+                };
+
+                match copy_frame_to_image(&frame, d3d_device, d3d_context, origin) {
+                    Ok(candidate) => {
+                        wgc_log(
+                            logger,
+                            &format!(
+                                "candidate size={}x{}",
+                                candidate.width, candidate.height
+                            ),
+                        );
+                        let usable = is_probably_usable_frame(&candidate);
+                        best = Some(candidate);
+                        if usable {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        wgc_log(logger, &format!("copy frame failed: {}", e.message));
+                        copy_err = Some(e);
+                    }
+                }
+            }
+            Err(_) => {
+                wgc_log(logger, "wait did not produce frame");
+            }
+        }
+    }
+
+    wgc_log(logger, "revoke frame handler");
+    let _ = frame_pool.RemoveFrameArrived(token);
+
+    match best {
+        Some(img) => Ok(img),
+        None => Err(copy_err
+            .unwrap_or_else(|| ErrorInfo::new("WGC frame timeout", "CaptureWithWgc"))),
+    }
+}
+
+pub fn capture_with_wgc(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> {
+    let logger = ctx.logger;
+
+    wgc_log(logger, "init_apartment");
+    // RoInitialize's HRESULT wrapper treats S_FALSE (already initialized on
+    // this thread, e.g. by a prior capture attempt) as success; only a real
+    // failure (such as a conflicting apartment type) is propagated.
+    unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.map_err(|e| to_err(e, "CaptureWithWgc"))?;
+
+    wgc_log(logger, "check supported");
+    let supported =
+        GraphicsCaptureSession::IsSupported().map_err(|e| to_err(e, "CaptureWithWgc"))?;
+    if !supported {
+        return Err(ErrorInfo::new(
+            "GraphicsCaptureSession::IsSupported false",
+            "CaptureWithWgc",
+        ));
+    }
+
+    wgc_log(logger, "create d3d device");
+    let mut d3d_device: Option<ID3D11Device> = None;
+    let mut d3d_context: Option<ID3D11DeviceContext> = None;
+    unsafe {
+        D3D11CreateDevice(
+            None,
+            D3D_DRIVER_TYPE_HARDWARE,
+            HMODULE::default(),
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            None,
+            D3D11_SDK_VERSION,
+            Some(&mut d3d_device),
+            None,
+            Some(&mut d3d_context),
+        )
+    }
+    .map_err(|e| to_err(e, "CaptureWithWgc"))?;
+    let d3d_device = d3d_device.ok_or_else(|| {
+        ErrorInfo::new("D3D11CreateDevice returned no device", "CaptureWithWgc")
+    })?;
+    let d3d_context = d3d_context.ok_or_else(|| {
+        ErrorInfo::new("D3D11CreateDevice returned no context", "CaptureWithWgc")
+    })?;
+
+    wgc_log(logger, "create winrt d3d device");
+    let winrt_device = create_winrt_d3d_device(&d3d_device)?;
+
+    let item = if ctx.method == "wgc-window" || ctx.method == "wgc-window2" {
+        wgc_log(logger, "create item for window");
+        let window = ctx
+            .window
+            .as_ref()
+            .ok_or_else(|| ErrorInfo::new("wgc-window needs window target", "CaptureWithWgc"))?;
+        create_capture_item_from_hwnd(HWND(window.hwnd as *mut core::ffi::c_void))?
+    } else if ctx.method == "wgc-monitor" || ctx.method == "wgc-monitor2" {
+        wgc_log(logger, "create item for monitor");
+        let monitor = ctx
+            .monitor
+            .as_ref()
+            .ok_or_else(|| ErrorInfo::new("wgc-monitor needs monitor target", "CaptureWithWgc"))?;
+        create_capture_item_from_monitor(HMONITOR(monitor.hmon as *mut core::ffi::c_void))?
+    } else {
+        return Err(ErrorInfo::new("unknown wgc method", "CaptureWithWgc"));
+    };
+
+    let size = item.Size().map_err(|e| to_err(e, "CaptureWithWgc"))?;
+    wgc_log(logger, &format!("item size={}x{}", size.Width, size.Height));
+
+    wgc_log(logger, "create frame pool");
+    let frame_pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
+        &winrt_device,
+        DirectXPixelFormat::B8G8R8A8UIntNormalized,
+        1,
+        size,
+    )
+    .map_err(|e| to_err(e, "CaptureWithWgc"))?;
+
+    wgc_log(logger, "create session");
+    let session = frame_pool
+        .CreateCaptureSession(&item)
+        .map_err(|e| to_err(e, "CaptureWithWgc"))?;
+
+    // From here on, session/frame_pool exist, so we always close them before
+    // returning -- whatever run_capture_loop produces (Ok or Err) is
+    // returned only after cleanup runs.
+    let result = run_capture_loop(ctx, logger, &frame_pool, &session, &d3d_device, &d3d_context);
+
+    wgc_log(logger, "close session");
+    let _ = session.Close();
+    wgc_log(logger, "close frame pool");
+    let _ = frame_pool.Close();
+
+    result
 }

@@ -36,24 +36,20 @@ fn bitmap_info(w: i32, h: i32) -> BITMAPINFO {
     bmi
 }
 
-/// Port of the anonymous `CaptureFromDc` helper: create a memory DC + DIB
-/// section, `BitBlt` from `src_dc`, and copy the resulting bits into an
-/// `ImageBuffer`.
-fn capture_from_dc(
-    src_dc: HDC,
-    src_x: i32,
-    src_y: i32,
+fn capture_with_dib(
+    compatible_dc: HDC,
     w: i32,
     h: i32,
     origin_x: i32,
     origin_y: i32,
+    draw: impl FnOnce(HDC) -> Result<(), ErrorInfo>,
 ) -> Result<ImageBuffer, ErrorInfo> {
     unsafe {
-        let mem_dc = CreateCompatibleDC(Some(src_dc));
+        let mem_dc = CreateCompatibleDC(Some(compatible_dc));
         if mem_dc.is_invalid() {
             return Err(ErrorInfo::with_win32(
                 "CreateCompatibleDC failed",
-                "CaptureFromDc",
+                "CaptureWithDib",
                 GetLastError().0,
             ));
         }
@@ -71,20 +67,18 @@ fn capture_from_dc(
                 let _ = DeleteDC(mem_dc);
                 return Err(ErrorInfo::with_win32(
                     "CreateDIBSection failed",
-                    "CaptureFromDc",
+                    "CaptureWithDib",
                     code,
                 ));
             }
         };
 
         let old = SelectObject(mem_dc, bmp.into());
-        let blt = BitBlt(mem_dc, 0, 0, w, h, Some(src_dc), src_x, src_y, SRCCOPY | CAPTUREBLT);
-        if blt.is_err() {
-            let code = GetLastError().0;
+        if let Err(err) = draw(mem_dc) {
             let _ = SelectObject(mem_dc, old);
             let _ = DeleteObject(bmp.into());
             let _ = DeleteDC(mem_dc);
-            return Err(ErrorInfo::with_win32("BitBlt failed", "CaptureFromDc", code));
+            return Err(err);
         }
 
         let row_pitch = w * 4;
@@ -104,6 +98,42 @@ fn capture_from_dc(
             bgra,
         })
     }
+}
+
+/// Capture from a device context by `BitBlt`-ing into a 32bpp top-down DIB.
+fn capture_from_dc(
+    src_dc: HDC,
+    src_x: i32,
+    src_y: i32,
+    w: i32,
+    h: i32,
+    origin_x: i32,
+    origin_y: i32,
+) -> Result<ImageBuffer, ErrorInfo> {
+    capture_with_dib(src_dc, w, h, origin_x, origin_y, |mem_dc| {
+        let blt = unsafe {
+            BitBlt(
+                mem_dc,
+                0,
+                0,
+                w,
+                h,
+                Some(src_dc),
+                src_x,
+                src_y,
+                SRCCOPY | CAPTUREBLT,
+            )
+        };
+        if blt.is_err() {
+            Err(ErrorInfo::with_win32(
+                "BitBlt failed",
+                "CaptureFromDc",
+                unsafe { GetLastError().0 },
+            ))
+        } else {
+            Ok(())
+        }
+    })
 }
 
 pub fn capture_with_gdi(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> {
@@ -126,59 +156,21 @@ pub fn capture_with_gdi(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> 
                     ));
                 }
 
-                let mem_dc = CreateCompatibleDC(Some(win_dc));
-                let bmi = bitmap_info(width, height);
-                let mut bits: *mut c_void = std::ptr::null_mut();
-                let dib = CreateDIBSection(Some(mem_dc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0);
-                let bmp = match dib {
-                    Ok(b) if !b.is_invalid() && !bits.is_null() => b,
-                    other => {
-                        let code = GetLastError().0;
-                        if let Ok(b) = other {
-                            let _ = DeleteObject(b.into());
+                let result =
+                    capture_with_dib(win_dc, width, height, w.rect.left, w.rect.top, |mem_dc| {
+                        let ok = unsafe { print_window(hwnd, mem_dc, PW_RENDERFULLCONTENT) };
+                        if ok.as_bool() {
+                            Ok(())
+                        } else {
+                            Err(ErrorInfo::with_win32(
+                                "PrintWindow failed",
+                                "CaptureWithGdi",
+                                unsafe { GetLastError().0 },
+                            ))
                         }
-                        let _ = DeleteDC(mem_dc);
-                        ReleaseDC(Some(hwnd), win_dc);
-                        return Err(ErrorInfo::with_win32(
-                            "CreateDIBSection failed",
-                            "CaptureWithGdi",
-                            code,
-                        ));
-                    }
-                };
-
-                let old = SelectObject(mem_dc, bmp.into());
-                let ok = print_window(hwnd, mem_dc, PW_RENDERFULLCONTENT);
-                if !ok.as_bool() {
-                    let code = GetLastError().0;
-                    let _ = SelectObject(mem_dc, old);
-                    let _ = DeleteObject(bmp.into());
-                    let _ = DeleteDC(mem_dc);
-                    ReleaseDC(Some(hwnd), win_dc);
-                    return Err(ErrorInfo::with_win32(
-                        "PrintWindow failed",
-                        "CaptureWithGdi",
-                        code,
-                    ));
-                }
-
-                let row_pitch = width * 4;
-                let len = row_pitch as usize * height as usize;
-                let bgra = std::slice::from_raw_parts(bits as *const u8, len).to_vec();
-
-                let _ = SelectObject(mem_dc, old);
-                let _ = DeleteObject(bmp.into());
-                let _ = DeleteDC(mem_dc);
+                    });
                 ReleaseDC(Some(hwnd), win_dc);
-
-                Ok(ImageBuffer {
-                    width,
-                    height,
-                    row_pitch,
-                    origin_x: w.rect.left,
-                    origin_y: w.rect.top,
-                    bgra,
-                })
+                result
             }
         }
 
@@ -212,7 +204,10 @@ pub fn capture_with_gdi(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> 
 
         "gdi-bitblt-windowdc" => {
             let w = ctx.window.as_ref().ok_or_else(|| {
-                ErrorInfo::new("gdi-bitblt-windowdc requires window target", "CaptureWithGdi")
+                ErrorInfo::new(
+                    "gdi-bitblt-windowdc requires window target",
+                    "CaptureWithGdi",
+                )
             })?;
             let hwnd = HWND(w.hwnd as *mut _);
             let src = unsafe { GetWindowDC(Some(hwnd)) };

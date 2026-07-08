@@ -158,14 +158,14 @@ pub fn capture_with_gdi(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> 
 
                 let result =
                     capture_with_dib(win_dc, width, height, w.rect.left, w.rect.top, |mem_dc| {
-                        let ok = unsafe { print_window(hwnd, mem_dc, PW_RENDERFULLCONTENT) };
+                        let ok = print_window(hwnd, mem_dc, PW_RENDERFULLCONTENT);
                         if ok.as_bool() {
                             Ok(())
                         } else {
                             Err(ErrorInfo::with_win32(
                                 "PrintWindow failed",
                                 "CaptureWithGdi",
-                                unsafe { GetLastError().0 },
+                                GetLastError().0,
                             ))
                         }
                     });

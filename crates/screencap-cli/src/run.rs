@@ -643,7 +643,11 @@ pub fn run() -> i32 {
 
     let boot = pre_parse_bootstrap(&argv);
     let mut logger = Logger::new();
-    logger.init(&boot.log_dir, &boot.command, boot.log_level);
+    if let Err(err) = logger.init(&boot.log_dir, &boot.command, boot.log_level) {
+        if !boot.json {
+            eprintln!("Warning: failed to initialize logger: {err}");
+        }
+    }
 
     let parsed = match cli::parse_args(&argv) {
         Ok(parsed) => parsed,
@@ -702,13 +706,7 @@ pub fn run() -> i32 {
         return rr.exit_code;
     }
 
-    logger.log(
-        LogLevel::Error,
-        &format!(
-            "result=failure where={} message={}",
-            rr.err.where_, rr.err.message
-        ),
-    );
+    logger.log(LogLevel::Error, &format!("result=failure error={}", rr.err));
 
     if parsed.common.json || parsed.command == CommandType::Cap {
         let command_str = if parsed.command == CommandType::Cap {
@@ -729,7 +727,7 @@ pub fn run() -> i32 {
             )
         );
     } else {
-        eprintln!("Error: {} ({})", rr.err.message, rr.err.where_);
+        eprintln!("Error: {}", rr.err);
     }
 
     rr.exit_code

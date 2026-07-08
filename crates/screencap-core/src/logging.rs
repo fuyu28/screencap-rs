@@ -3,7 +3,7 @@
 use crate::types::LogLevel;
 use crate::util::{build_timestamp_for_filename, iso8601_now_local};
 use std::fs::{self, File};
-use std::io::Write as _;
+use std::io::{self, Write as _};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -39,16 +39,17 @@ impl Logger {
         Self::default()
     }
 
-    /// Creates log_dir and opens the log file. Returns false on failure
-    /// (logging then becomes a no-op, matching the C++ behavior).
-    pub fn init(&mut self, log_dir_utf8: &str, command_name: &str, level: LogLevel) -> bool {
+    pub fn init(
+        &mut self,
+        log_dir_utf8: &str,
+        command_name: &str,
+        level: LogLevel,
+    ) -> io::Result<()> {
         let mut state = self.inner.lock().unwrap();
         state.min_level = level;
 
         let dir = PathBuf::from(log_dir_utf8);
-        if fs::create_dir_all(&dir).is_err() {
-            return false;
-        }
+        fs::create_dir_all(&dir)?;
 
         let base_name = if command_name.is_empty() {
             "unknown"
@@ -63,14 +64,10 @@ impl Logger {
         );
         let file_path = dir.join(filename);
 
-        match File::create(&file_path) {
-            Ok(f) => {
-                state.file_path = file_path;
-                state.file = Some(f);
-                true
-            }
-            Err(_) => false,
-        }
+        let file = File::create(&file_path)?;
+        state.file_path = file_path;
+        state.file = Some(file);
+        Ok(())
     }
 
     pub fn log(&self, level: LogLevel, msg: &str) {

@@ -88,6 +88,19 @@ impl ErrorInfo {
     }
 }
 
+impl std::fmt::Display for ErrorInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({})", self.message, self.where_)?;
+        if let Some(hr) = self.hresult {
+            write!(f, " hresult=0x{hr:08X}")?;
+        }
+        if let Some(code) = self.win32_error {
+            write!(f, " win32_error={code}")?;
+        }
+        Ok(())
+    }
+}
+
 /// BGRA image. `row_pitch` is always `width * 4` once stored here; capture
 /// paths copy row-by-row from the source pitch.
 #[derive(Clone, Debug, Default)]

@@ -1,4 +1,4 @@
-//! Port of src/capture_dxgi.cpp (DXGI Output Duplication).
+//! DXGI Output Duplication capture.
 //! Methods: dxgi-monitor, dxgi-window (monitor resolved from ctx.monitor or
 //! the window's nearest monitor).
 

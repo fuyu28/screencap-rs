@@ -1,5 +1,3 @@
-//! Port of src/image_stats.cpp.
-
 use crate::types::{ImageBuffer, ImageStats};
 
 /// black_ratio = pixels with r==g==b==0, transparent_ratio = pixels with a==0,

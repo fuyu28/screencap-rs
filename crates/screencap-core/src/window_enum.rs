@@ -1,5 +1,3 @@
-//! Port of src/window_enum.cpp.
-
 use crate::logging::Logger;
 use crate::types::{ErrorInfo, LogLevel, Rect, TargetWindowQuery, WindowInfo};
 use crate::util::utf8_from_wide;
@@ -30,9 +28,6 @@ fn get_window_text_utf8(hwnd: HWND) -> String {
     if len > 0 {
         unsafe { GetWindowTextW(hwnd, &mut ws) };
     }
-    // Matches the C++ side: std::wstring(len, L'\0') is filled in-place by
-    // GetWindowTextW (which also writes the NUL terminator into the extra
-    // capacity slot), then only the first `len` units are kept.
     utf8_from_wide(&ws[..len])
 }
 

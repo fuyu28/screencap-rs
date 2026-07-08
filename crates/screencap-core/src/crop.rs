@@ -1,5 +1,3 @@
-//! Port of src/crop.cpp.
-
 use crate::types::{CropMode, CropRect, ErrorInfo, ImageBuffer, Pad, Rect, WindowInfo};
 
 fn intersect(a: Rect, b: Rect) -> Rect {

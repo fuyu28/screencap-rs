@@ -1,4 +1,4 @@
-//! Port of src/capture_wgc.cpp (Windows.Graphics.Capture).
+//! Windows.Graphics.Capture implementation.
 //! Methods: wgc-window / wgc-window2 (window target), wgc-monitor /
 //! wgc-monitor2 (monitor target). Crops to frame ContentSize, retries up to 5
 //! frames until one passes the usable-frame heuristic
@@ -38,8 +38,6 @@ fn to_err(e: windows::core::Error, where_: &str) -> ErrorInfo {
     ErrorInfo::with_hresult(e.message(), where_, e.code().0 as u32)
 }
 
-/// For call sites where the C++ used a fixed message instead of the system
-/// HRESULT message — keeps JSON/log error output identical to the original.
 fn to_err_with(message: &str, where_: &str, e: &windows::core::Error) -> ErrorInfo {
     ErrorInfo::with_hresult(message, where_, e.code().0 as u32)
 }
@@ -157,13 +155,10 @@ fn is_probably_usable_frame(img: &ImageBuffer) -> bool {
     stats.transparent_ratio < 0.98 && stats.black_ratio < 0.98
 }
 
-/// Registers `FrameArrived`, starts the session, and pumps up to
-/// `MAX_FRAMES` frames looking for a usable one. `FrameArrived` fires on a
-/// free-threaded frame-pool worker thread; the handler only forwards the
-/// frame through an `mpsc` channel (no logging, no shared mutable state), so
-/// all real work -- including every `Logger` call -- happens back here on
-/// the calling thread. This keeps the handoff race-free without needing the
-/// mutex the C++ implementation uses for the same purpose.
+/// Registers `FrameArrived`, starts the session, and receives up to
+/// `MAX_FRAMES` frames looking for a usable one. The event handler only
+/// forwards frames through a channel, so logging and image processing stay on
+/// the calling thread.
 fn run_capture_loop(
     ctx: &CaptureContext,
     logger: Option<&Logger>,

@@ -1,5 +1,4 @@
-//! screencap-core: Windows screenshot capture library.
-//! Rust port of the C++ screencap project. Windows-only.
+//! Windows screenshot capture library.
 
 pub mod capture_dxgi;
 pub mod capture_gdi;

@@ -1,4 +1,4 @@
-//! screencap-cli entry point. Port of src/main.cpp.
+//! screencap-cli entry point.
 
 mod cli;
 mod run;

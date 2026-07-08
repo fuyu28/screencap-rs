@@ -1,5 +1,3 @@
-//! Port of src/logging.cpp / logging.h.
-
 use crate::types::LogLevel;
 use crate::util::{build_timestamp_for_filename, iso8601_now_local};
 use std::fs::{self, File};
@@ -116,7 +114,6 @@ pub fn log_level_name(lv: LogLevel) -> &'static str {
     }
 }
 
-/// Build date+time stamp (compile-time in C++; a static string is fine here).
 pub fn get_build_stamp() -> String {
     "rust build".to_string()
 }

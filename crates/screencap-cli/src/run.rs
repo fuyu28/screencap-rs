@@ -1,6 +1,5 @@
-//! Port of the run logic in src/main.cpp: bootstrap logging, DPI mode,
-//! command dispatch (cap / list windows / list monitors), hotkey wait,
-//! JSON output, exit codes (0 ok, 1 runtime failure, 2 parse error).
+//! CLI runtime: logging, DPI mode, command dispatch, hotkey wait, JSON output,
+//! and process exit codes.
 
 use std::time::Instant;
 
@@ -427,9 +426,6 @@ fn run_cap(parsed: &ParsedArgs, logger: Option<&Logger>, dpi_applied: &str) -> R
         crop_mode = CropMode::Window;
     }
 
-    // resolve_crop_rect_screen never returns an invalid rect on the Ok path
-    // (the C++ version signaled that case through the same error out-param),
-    // so no separate validity check is needed here.
     let crop_rect = match resolve_crop_rect_screen(
         crop_mode,
         parsed.cap.crop_rect,

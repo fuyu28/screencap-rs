@@ -1,5 +1,5 @@
-//! Port of src/gui.cpp: win32 window-picker GUI. Lists capturable windows in
-//! a ListView, lets the user pick method/output path, and shells out to
+//! Win32 window-picker GUI. Lists capturable windows in a ListView, lets the
+//! user pick method/output path, and shells out to
 //! screencap-cli.exe (next to this exe) to do the actual capture.
 
 use std::ffi::c_void;
@@ -56,9 +56,8 @@ const METHODS: [&str; 4] = [
     "dxgi-window",
 ];
 
-/// Per-window state, mirroring the C++ `GuiState`. A pointer to this struct
-/// (stored via GWLP_USERDATA, set from WM_NCCREATE's `lpCreateParams`) is how
-/// the window procedure recovers its context, exactly like the C++ code.
+/// Per-window state. A pointer to this struct is stored in GWLP_USERDATA so the
+/// window procedure can recover its context.
 #[derive(Default)]
 struct GuiState {
     hwnd: HWND,
@@ -120,7 +119,6 @@ fn default_output_path() -> String {
     }
 }
 
-/// Mirrors `ResizeControls` in src/gui.cpp: same padding/sizes/layout.
 fn resize_controls(state: &GuiState) {
     let mut rc = RECT::default();
     unsafe {
@@ -246,7 +244,6 @@ fn is_pickable(w: &WindowInfo) -> bool {
     root == hwnd
 }
 
-/// Mirrors `RefreshWindows`: enumerate, filter, sort by title, fill the list.
 fn refresh_windows(state: &mut GuiState) {
     state.windows.clear();
     unsafe {
@@ -307,7 +304,6 @@ fn build_save_filter() -> Vec<u16> {
     buf
 }
 
-/// Mirrors `BrowseOutput`: GetSaveFileNameW with a PNG filter.
 fn browse_output(state: &mut GuiState) {
     let current = get_window_text(state.out);
     let mut file_buf = to_wide_fixed(&current, 260);
@@ -395,10 +391,8 @@ fn cli_exe_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("screencap-cli.exe"))
 }
 
-/// Mirrors `RunCaptureProcess`, shelling out to screencap-cli.exe. Uses
-/// `std::process::Command` instead of raw `CreateProcessW` (per the port
-/// notes: simpler and equivalent), with `CREATE_NO_WINDOW` so no console
-/// flashes up.
+/// Shell out to screencap-cli.exe with `CREATE_NO_WINDOW` so no console flashes
+/// up.
 fn run_capture_process(window: &WindowInfo, method: &str, out_path: &str) -> Result<(), String> {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -436,7 +430,6 @@ fn run_capture_process(window: &WindowInfo, method: &str, out_path: &str) -> Res
     }
 }
 
-/// Mirrors `CaptureSelected`.
 fn capture_selected(state: &mut GuiState) {
     let idx = match selected_window_index(state) {
         Some(idx) if idx < state.windows.len() => idx,
@@ -498,7 +491,6 @@ fn capture_selected(state: &mut GuiState) {
     }
 }
 
-/// Mirrors the `WM_CREATE` handler in `WndProc`: builds every control.
 fn create_controls(state: &mut GuiState, hwnd: HWND) {
     state.hwnd = hwnd;
     let instance = unsafe { GetModuleHandleW(PCWSTR::null()) }
@@ -662,7 +654,6 @@ fn create_controls(state: &mut GuiState, hwnd: HWND) {
     refresh_windows(state);
 }
 
-/// Mirrors `WndProc`.
 unsafe extern "system" fn wnd_proc(
     hwnd: HWND,
     msg: u32,

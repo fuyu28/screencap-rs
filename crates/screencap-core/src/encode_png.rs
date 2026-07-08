@@ -1,4 +1,4 @@
-//! Port of src/encode_wic_png.cpp: PNG encode via WIC, 32bpp BGRA.
+//! PNG encoding through WIC, 32bpp BGRA.
 
 use windows::core::{Error as WinError, HRESULT, PCWSTR};
 use windows::Win32::Foundation::{GENERIC_WRITE, RPC_E_CHANGED_MODE};
@@ -16,9 +16,8 @@ use crate::util::wide_from_utf8;
 
 const WHERE: &str = "SavePngWic";
 
-/// RAII guard mirroring the C++ `CoInitGuard`: calls `CoUninitialize` on drop
-/// only if this call to `CoInitializeEx` actually initialized COM (i.e. it
-/// wasn't a no-op due to `RPC_E_CHANGED_MODE`).
+/// Calls `CoUninitialize` on drop only if this call to `CoInitializeEx`
+/// actually initialized COM.
 struct CoInitGuard {
     active: bool,
 }

@@ -1,5 +1,3 @@
-//! Port of src/monitor_enum.cpp.
-
 use crate::types::{MonitorInfo, Rect};
 use crate::util::utf8_from_wide;
 
@@ -64,32 +62,8 @@ pub fn enumerate_monitors() -> Vec<MonitorInfo> {
     out
 }
 
-/// Mimics C++ `std::stoi`: skips leading whitespace, then parses an
-/// optional sign followed by decimal digits, ignoring any trailing
-/// characters. Returns `None` if no digits are present (std::stoi throws).
-fn stoi_like(token: &str) -> Option<i32> {
-    let trimmed = token.trim_start();
-    let mut chars = trimmed.chars().peekable();
-    let mut s = String::new();
-    if let Some(&c) = chars.peek() {
-        if c == '+' || c == '-' {
-            s.push(c);
-            chars.next();
-        }
-    }
-    let mut has_digit = false;
-    for c in chars {
-        if c.is_ascii_digit() {
-            has_digit = true;
-            s.push(c);
-        } else {
-            break;
-        }
-    }
-    if !has_digit {
-        return None;
-    }
-    s.parse::<i32>().ok()
+fn parse_monitor_index(token: &str) -> Option<i32> {
+    token.trim().parse::<i32>().ok()
 }
 
 /// token is "primary" or a monitor index in decimal.
@@ -98,6 +72,6 @@ pub fn find_monitor_by_token(monitors: &[MonitorInfo], token: &str) -> Option<Mo
         return monitors.iter().find(|m| m.primary).cloned();
     }
 
-    let idx = stoi_like(token)?;
+    let idx = parse_monitor_index(token)?;
     monitors.iter().find(|m| m.index == idx).cloned()
 }

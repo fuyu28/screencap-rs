@@ -450,3 +450,64 @@ pub fn crop_mode_name(m: CropMode) -> &'static str {
         CropMode::Manual => "manual",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn parses_global_json_after_list_subcommand() {
+        let parsed = parse_args(&args(&["screencap-cli", "list", "windows", "--json"]))
+            .expect("list windows should parse");
+
+        assert_eq!(parsed.command, CommandType::ListWindows);
+        assert!(parsed.common.json);
+    }
+
+    #[test]
+    fn parses_screen_capture_options() {
+        let parsed = parse_args(&args(&[
+            "screencap-cli",
+            "cap",
+            "--method",
+            "dxgi-monitor",
+            "--target",
+            "screen",
+            "--monitor",
+            "primary",
+            "--out",
+            "a.png",
+        ]))
+        .expect("screen capture should parse");
+
+        assert_eq!(parsed.command, CommandType::Cap);
+        assert_eq!(parsed.cap.target, TargetType::Screen);
+        assert_eq!(parsed.cap.screen_query.monitor.as_deref(), Some("primary"));
+        assert_eq!(parsed.cap.out_path, "a.png");
+    }
+
+    #[test]
+    fn validates_window_target_query() {
+        let err = parse_args(&args(&[
+            "screencap-cli",
+            "cap",
+            "--method",
+            "wgc-window",
+            "--out",
+            "a.png",
+        ]))
+        .expect_err("window capture without target query should fail");
+
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn no_args_returns_help() {
+        let err = parse_args(&args(&["screencap-cli"])).expect_err("no args should show help");
+        assert!(is_help_error(&err));
+    }
+}

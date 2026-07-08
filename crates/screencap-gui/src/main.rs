@@ -1,4 +1,4 @@
-//! screencap (GUI window picker) entry point. Port of src/gui_main.cpp.
+//! screencap GUI entry point.
 #![windows_subsystem = "windows"]
 
 mod gui;

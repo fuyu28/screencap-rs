@@ -10,8 +10,7 @@ use std::time::Duration;
 use windows::core::{IInspectable, Interface};
 use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{
-    Direct3D11CaptureFrame, Direct3D11CaptureFramePool, GraphicsCaptureItem,
-    GraphicsCaptureSession,
+    Direct3D11CaptureFrame, Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession,
 };
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Graphics::DirectX::DirectXPixelFormat;
@@ -19,8 +18,7 @@ use windows::Win32::Foundation::{HMODULE, HWND};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_BOX,
-    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAPPED_SUBRESOURCE,
-    D3D11_MAP_READ, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
+    D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
 };
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::Graphics::Gdi::HMONITOR;
@@ -30,6 +28,7 @@ use windows::Win32::System::WinRT::Direct3D11::{
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
 use windows::Win32::System::WinRT::{RoInitialize, RO_INIT_MULTITHREADED};
 
+use crate::d3d11_copy::copy_texture_to_image;
 use crate::logging::Logger;
 use crate::types::{CaptureContext, ErrorInfo, ImageBuffer, LogLevel, Rect};
 
@@ -52,17 +51,21 @@ fn wgc_log(logger: Option<&Logger>, msg: &str) {
 }
 
 fn create_winrt_d3d_device(d3d_device: &ID3D11Device) -> Result<IDirect3DDevice, ErrorInfo> {
-    let dxgi_device: IDXGIDevice = d3d_device
-        .cast()
-        .map_err(|e| to_err_with("QueryInterface IDXGIDevice failed", "CreateWinRtD3DDevice", &e))?;
+    let dxgi_device: IDXGIDevice = d3d_device.cast().map_err(|e| {
+        to_err_with(
+            "QueryInterface IDXGIDevice failed",
+            "CreateWinRtD3DDevice",
+            &e,
+        )
+    })?;
     let inspectable: IInspectable = unsafe { CreateDirect3D11DeviceFromDXGIDevice(&dxgi_device) }
         .map_err(|e| {
-            to_err_with(
-                "CreateDirect3D11DeviceFromDXGIDevice failed",
-                "CreateWinRtD3DDevice",
-                &e,
-            )
-        })?;
+        to_err_with(
+            "CreateDirect3D11DeviceFromDXGIDevice failed",
+            "CreateWinRtD3DDevice",
+            &e,
+        )
+    })?;
     inspectable
         .cast::<IDirect3DDevice>()
         .map_err(|e| to_err(e, "CreateWinRtD3DDevice"))
@@ -80,8 +83,13 @@ fn create_capture_item_from_monitor(hmon: HMONITOR) -> Result<GraphicsCaptureIte
     let interop: IGraphicsCaptureItemInterop =
         windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()
             .map_err(|e| to_err(e, "CreateCaptureItemFromMonitor"))?;
-    unsafe { interop.CreateForMonitor::<GraphicsCaptureItem>(hmon) }
-        .map_err(|e| to_err_with("CreateForMonitor failed", "CreateCaptureItemFromMonitor", &e))
+    unsafe { interop.CreateForMonitor::<GraphicsCaptureItem>(hmon) }.map_err(|e| {
+        to_err_with(
+            "CreateForMonitor failed",
+            "CreateCaptureItemFromMonitor",
+            &e,
+        )
+    })
 }
 
 /// Copies a captured frame into a plain BGRA buffer, cropped to the frame's
@@ -96,9 +104,14 @@ fn copy_frame_to_image(
     let surface = frame.Surface().map_err(|e| to_err(e, "CopyFrameToImage"))?;
     let access: IDirect3DDxgiInterfaceAccess =
         surface.cast().map_err(|e| to_err(e, "CopyFrameToImage"))?;
-    let tex: ID3D11Texture2D = unsafe { access.GetInterface::<ID3D11Texture2D>() }.map_err(|e| {
-        to_err_with("GetInterface(ID3D11Texture2D) failed", "CopyFrameToImage", &e)
-    })?;
+    let tex: ID3D11Texture2D =
+        unsafe { access.GetInterface::<ID3D11Texture2D>() }.map_err(|e| {
+            to_err_with(
+                "GetInterface(ID3D11Texture2D) failed",
+                "CopyFrameToImage",
+                &e,
+            )
+        })?;
 
     let mut desc = D3D11_TEXTURE2D_DESC::default();
     unsafe { tex.GetDesc(&mut desc) };
@@ -112,56 +125,31 @@ fn copy_frame_to_image(
             "CopyFrameToImage",
         ));
     }
-    desc.Width = desc.Width.min(content_size.Width as u32);
-    desc.Height = desc.Height.min(content_size.Height as u32);
-    desc.BindFlags = 0;
-    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
-    desc.MiscFlags = 0;
-    desc.Usage = D3D11_USAGE_STAGING;
-
-    let mut staging: Option<ID3D11Texture2D> = None;
-    unsafe { device.CreateTexture2D(&desc, None, Some(&mut staging)) }
-        .map_err(|e| to_err_with("CreateTexture2D staging failed", "CopyFrameToImage", &e))?;
-    let staging =
-        staging.ok_or_else(|| ErrorInfo::new("CreateTexture2D staging failed", "CopyFrameToImage"))?;
+    let width = desc.Width.min(content_size.Width as u32);
+    let height = desc.Height.min(content_size.Height as u32);
 
     let src_box = D3D11_BOX {
         left: 0,
         top: 0,
         front: 0,
-        right: desc.Width,
-        bottom: desc.Height,
+        right: width,
+        bottom: height,
         back: 1,
     };
-    unsafe {
-        context.CopySubresourceRegion(&staging, 0, 0, 0, 0, &tex, 0, Some(&src_box));
-    }
 
-    let mut map = D3D11_MAPPED_SUBRESOURCE::default();
-    unsafe { context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut map)) }
-        .map_err(|e| to_err_with("Map staging failed", "CopyFrameToImage", &e))?;
-
-    let width = desc.Width as i32;
-    let height = desc.Height as i32;
-    let row_pitch = width * 4;
-    let mut bgra = vec![0u8; (row_pitch as usize) * (height as usize)];
-    unsafe {
-        for y in 0..height {
-            let src = (map.pData as *const u8).add((y as usize) * (map.RowPitch as usize));
-            let dst = bgra.as_mut_ptr().add((y as usize) * (row_pitch as usize));
-            std::ptr::copy_nonoverlapping(src, dst, row_pitch as usize);
-        }
-        context.Unmap(&staging, 0);
-    }
-
-    Ok(ImageBuffer {
-        width,
-        height,
-        row_pitch,
-        origin_x: origin_rect.left,
-        origin_y: origin_rect.top,
-        bgra,
-    })
+    copy_texture_to_image(
+        device,
+        context,
+        desc,
+        width as i32,
+        height as i32,
+        origin_rect.left,
+        origin_rect.top,
+        |staging| unsafe {
+            context.CopySubresourceRegion(staging, 0, 0, 0, 0, &tex, 0, Some(&src_box));
+        },
+        "CopyFrameToImage",
+    )
 }
 
 fn is_probably_usable_frame(img: &ImageBuffer) -> bool {
@@ -185,16 +173,15 @@ fn run_capture_loop(
     d3d_context: &ID3D11DeviceContext,
 ) -> Result<ImageBuffer, ErrorInfo> {
     let (tx, rx) = mpsc::channel::<Direct3D11CaptureFrame>();
-    let handler = TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(
-        move |sender, _args| {
+    let handler =
+        TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(move |sender, _args| {
             if let Some(pool) = sender.as_ref() {
                 if let Ok(frame) = pool.TryGetNextFrame() {
                     let _ = tx.send(frame);
                 }
             }
             Ok(())
-        },
-    );
+        });
     let token = frame_pool
         .FrameArrived(&handler)
         .map_err(|e| to_err(e, "CaptureWithWgc"))?;
@@ -225,10 +212,7 @@ fn run_capture_loop(
                     Ok(candidate) => {
                         wgc_log(
                             logger,
-                            &format!(
-                                "candidate size={}x{}",
-                                candidate.width, candidate.height
-                            ),
+                            &format!("candidate size={}x{}", candidate.width, candidate.height),
                         );
                         let usable = is_probably_usable_frame(&candidate);
                         best = Some(candidate);
@@ -253,8 +237,9 @@ fn run_capture_loop(
 
     match best {
         Some(img) => Ok(img),
-        None => Err(copy_err
-            .unwrap_or_else(|| ErrorInfo::new("WGC frame timeout", "CaptureWithWgc"))),
+        None => {
+            Err(copy_err.unwrap_or_else(|| ErrorInfo::new("WGC frame timeout", "CaptureWithWgc")))
+        }
     }
 }
 
@@ -294,33 +279,30 @@ pub fn capture_with_wgc(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> 
         )
     }
     .map_err(|e| to_err(e, "CaptureWithWgc"))?;
-    let d3d_device = d3d_device.ok_or_else(|| {
-        ErrorInfo::new("D3D11CreateDevice returned no device", "CaptureWithWgc")
-    })?;
-    let d3d_context = d3d_context.ok_or_else(|| {
-        ErrorInfo::new("D3D11CreateDevice returned no context", "CaptureWithWgc")
-    })?;
+    let d3d_device = d3d_device
+        .ok_or_else(|| ErrorInfo::new("D3D11CreateDevice returned no device", "CaptureWithWgc"))?;
+    let d3d_context = d3d_context
+        .ok_or_else(|| ErrorInfo::new("D3D11CreateDevice returned no context", "CaptureWithWgc"))?;
 
     wgc_log(logger, "create winrt d3d device");
     let winrt_device = create_winrt_d3d_device(&d3d_device)?;
 
-    let item = if ctx.method == "wgc-window" || ctx.method == "wgc-window2" {
-        wgc_log(logger, "create item for window");
-        let window = ctx
-            .window
-            .as_ref()
-            .ok_or_else(|| ErrorInfo::new("wgc-window needs window target", "CaptureWithWgc"))?;
-        create_capture_item_from_hwnd(HWND(window.hwnd as *mut core::ffi::c_void))?
-    } else if ctx.method == "wgc-monitor" || ctx.method == "wgc-monitor2" {
-        wgc_log(logger, "create item for monitor");
-        let monitor = ctx
-            .monitor
-            .as_ref()
-            .ok_or_else(|| ErrorInfo::new("wgc-monitor needs monitor target", "CaptureWithWgc"))?;
-        create_capture_item_from_monitor(HMONITOR(monitor.hmon as *mut core::ffi::c_void))?
-    } else {
-        return Err(ErrorInfo::new("unknown wgc method", "CaptureWithWgc"));
-    };
+    let item =
+        if ctx.method == "wgc-window" || ctx.method == "wgc-window2" {
+            wgc_log(logger, "create item for window");
+            let window = ctx.window.as_ref().ok_or_else(|| {
+                ErrorInfo::new("wgc-window needs window target", "CaptureWithWgc")
+            })?;
+            create_capture_item_from_hwnd(HWND(window.hwnd as *mut core::ffi::c_void))?
+        } else if ctx.method == "wgc-monitor" || ctx.method == "wgc-monitor2" {
+            wgc_log(logger, "create item for monitor");
+            let monitor = ctx.monitor.as_ref().ok_or_else(|| {
+                ErrorInfo::new("wgc-monitor needs monitor target", "CaptureWithWgc")
+            })?;
+            create_capture_item_from_monitor(HMONITOR(monitor.hmon as *mut core::ffi::c_void))?
+        } else {
+            return Err(ErrorInfo::new("unknown wgc method", "CaptureWithWgc"));
+        };
 
     let size = item.Size().map_err(|e| to_err(e, "CaptureWithWgc"))?;
     wgc_log(logger, &format!("item size={}x{}", size.Width, size.Height));
@@ -342,7 +324,14 @@ pub fn capture_with_wgc(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> 
     // From here on, session/frame_pool exist, so we always close them before
     // returning -- whatever run_capture_loop produces (Ok or Err) is
     // returned only after cleanup runs.
-    let result = run_capture_loop(ctx, logger, &frame_pool, &session, &d3d_device, &d3d_context);
+    let result = run_capture_loop(
+        ctx,
+        logger,
+        &frame_pool,
+        &session,
+        &d3d_device,
+        &d3d_context,
+    );
 
     wgc_log(logger, "close session");
     let _ = session.Close();

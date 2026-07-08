@@ -7,8 +7,7 @@ use windows::Win32::Foundation::{HMODULE, HWND};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
 use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
-    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAPPED_SUBRESOURCE,
-    D3D11_MAP_READ, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
+    D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput1, IDXGIOutputDuplication,
@@ -18,6 +17,7 @@ use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromWindow, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
 
+use crate::d3d11_copy::copy_texture_to_image;
 use crate::types::{CaptureContext, ErrorInfo, ImageBuffer, Rect};
 
 fn hr_error(message: &str, where_: &str, e: &windows::core::Error) -> ErrorInfo {
@@ -117,54 +117,29 @@ fn acquire_dup_frame(
 
     let mut desc = D3D11_TEXTURE2D_DESC::default();
     unsafe { tex.GetDesc(&mut desc) };
-    desc.BindFlags = 0;
-    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
-    desc.MiscFlags = 0;
-    desc.Usage = D3D11_USAGE_STAGING;
-
-    let mut staging: Option<ID3D11Texture2D> = None;
-    if let Err(e) = unsafe { device.CreateTexture2D(&desc, None, Some(&mut staging)) } {
-        let _ = unsafe { dup.ReleaseFrame() };
-        return Err(hr_error(
-            "CreateTexture2D staging failed",
-            "AcquireDupFrame",
-            &e,
-        ));
-    }
-    let staging = staging.expect("CreateTexture2D succeeded without a texture");
-
-    unsafe { context.CopyResource(&staging, &tex) };
-
-    let mut map = D3D11_MAPPED_SUBRESOURCE::default();
-    if let Err(e) = unsafe { context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut map)) } {
-        let _ = unsafe { dup.ReleaseFrame() };
-        return Err(hr_error("Map staging failed", "AcquireDupFrame", &e));
-    }
 
     let w = capture_rect.width();
     let h = capture_rect.height();
-    let row_pitch = (w * 4) as usize;
-    let mut bgra = vec![0u8; (w as usize) * (h as usize) * 4];
-
-    for y in 0..h as usize {
-        unsafe {
-            let src = (map.pData as *const u8).add(y * map.RowPitch as usize);
-            let dst = bgra.as_mut_ptr().add(y * row_pitch);
-            std::ptr::copy_nonoverlapping(src, dst, row_pitch);
+    let image = match copy_texture_to_image(
+        &device,
+        &context,
+        desc,
+        w,
+        h,
+        capture_rect.left,
+        capture_rect.top,
+        |staging| unsafe { context.CopyResource(staging, &tex) },
+        "AcquireDupFrame",
+    ) {
+        Ok(image) => image,
+        Err(err) => {
+            let _ = unsafe { dup.ReleaseFrame() };
+            return Err(err);
         }
-    }
-
-    unsafe { context.Unmap(&staging, 0) };
+    };
     let _ = unsafe { dup.ReleaseFrame() };
 
-    Ok(ImageBuffer {
-        width: w,
-        height: h,
-        row_pitch: w * 4,
-        origin_x: capture_rect.left,
-        origin_y: capture_rect.top,
-        bgra,
-    })
+    Ok(image)
 }
 
 /// On success also returns (adapter_index, output_index) for logging.

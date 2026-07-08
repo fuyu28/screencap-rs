@@ -13,7 +13,7 @@ use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM}
 use windows::Win32::Graphics::Gdi::{UpdateWindow, COLOR_WINDOW, HBRUSH};
 use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW};
 use windows::Win32::UI::Controls::Dialogs::{
-    GetSaveFileNameW, OPENFILENAMEW, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST,
+    GetSaveFileNameW, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
 };
 use windows::Win32::UI::Controls::{
     InitCommonControlsEx, ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX, LVCF_TEXT, LVCF_WIDTH,
@@ -32,8 +32,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PostQuitMessage, RegisterClassW, SendMessageW, SetWindowLongPtrW, SetWindowTextW, ShowWindow,
     TranslateMessage, CBS_DROPDOWNLIST, CB_ADDSTRING, CB_GETCURSEL, CB_GETLBTEXT, CB_SETCURSEL,
     CREATESTRUCTW, CW_USEDEFAULT, ES_AUTOHSCROLL, GA_ROOT, GWLP_USERDATA, HMENU, IDC_ARROW,
-    MB_ICONERROR, MB_ICONINFORMATION, MSG, SW_SHOW, WM_COMMAND, WM_CREATE, WM_DESTROY,
-    WM_NCCREATE, WM_NOTIFY, WM_SIZE, WNDCLASSW, WINDOW_STYLE, WS_CHILD, WS_EX_CLIENTEDGE,
+    MB_ICONERROR, MB_ICONINFORMATION, MSG, SW_SHOW, WINDOW_STYLE, WM_COMMAND, WM_CREATE,
+    WM_DESTROY, WM_NCCREATE, WM_NOTIFY, WM_SIZE, WNDCLASSW, WS_CHILD, WS_EX_CLIENTEDGE,
     WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 
@@ -139,16 +139,51 @@ fn resize_controls(state: &GuiState) {
 
     unsafe {
         let _ = MoveWindow(state.refresh, pad, pad, refresh_w, button_h, true);
-        let _ = MoveWindow(state.method, pad + refresh_w + pad, pad, method_w, 180, true);
-        let _ = MoveWindow(state.capture, width - pad - capture_w, pad, capture_w, button_h, true);
+        let _ = MoveWindow(
+            state.method,
+            pad + refresh_w + pad,
+            pad,
+            method_w,
+            180,
+            true,
+        );
+        let _ = MoveWindow(
+            state.capture,
+            width - pad - capture_w,
+            pad,
+            capture_w,
+            button_h,
+            true,
+        );
 
         let out_y = pad + button_h + pad;
-        let _ = MoveWindow(state.out, pad, out_y, width - pad * 3 - browse_w, out_h, true);
-        let _ = MoveWindow(state.browse, width - pad - browse_w, out_y, browse_w, out_h, true);
+        let _ = MoveWindow(
+            state.out,
+            pad,
+            out_y,
+            width - pad * 3 - browse_w,
+            out_h,
+            true,
+        );
+        let _ = MoveWindow(
+            state.browse,
+            width - pad - browse_w,
+            out_y,
+            browse_w,
+            out_h,
+            true,
+        );
 
         let list_y = out_y + out_h + pad;
         let list_h = height - list_y - status_h - pad * 2;
-        let _ = MoveWindow(state.list, pad, list_y, width - pad * 2, list_h.max(80), true);
+        let _ = MoveWindow(
+            state.list,
+            pad,
+            list_y,
+            width - pad * 2,
+            list_h.max(80),
+            true,
+        );
         let _ = MoveWindow(
             state.status,
             pad,
@@ -215,10 +250,18 @@ fn is_pickable(w: &WindowInfo) -> bool {
 fn refresh_windows(state: &mut GuiState) {
     state.windows.clear();
     unsafe {
-        SendMessageW(state.list, LVM_DELETEALLITEMS, Some(WPARAM(0)), Some(LPARAM(0)));
+        SendMessageW(
+            state.list,
+            LVM_DELETEALLITEMS,
+            Some(WPARAM(0)),
+            Some(LPARAM(0)),
+        );
     }
 
-    let mut pickable: Vec<WindowInfo> = enumerate_windows().into_iter().filter(is_pickable).collect();
+    let mut pickable: Vec<WindowInfo> = enumerate_windows()
+        .into_iter()
+        .filter(is_pickable)
+        .collect();
     pickable.sort_by(|a, b| a.title.cmp(&b.title));
     state.windows = pickable;
 
@@ -282,7 +325,10 @@ fn browse_output(state: &mut GuiState) {
     };
 
     if unsafe { GetSaveFileNameW(&mut ofn) }.as_bool() {
-        let end = file_buf.iter().position(|&c| c == 0).unwrap_or(file_buf.len());
+        let end = file_buf
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(file_buf.len());
         let path = utf8_from_wide(&file_buf[..end]);
         set_window_text(state.out, &path);
     }
@@ -382,7 +428,10 @@ fn run_capture_process(window: &WindowInfo, method: &str, out_path: &str) -> Res
 
     match status {
         Ok(status) if status.success() => Ok(()),
-        Ok(status) => Err(format!("Capture failed. Exit code: {}", status.code().unwrap_or(1))),
+        Ok(status) => Err(format!(
+            "Capture failed. Exit code: {}",
+            status.code().unwrap_or(1)
+        )),
         Err(e) => Err(format!("Failed to start screencap-cli.exe: {e}")),
     }
 }
@@ -438,7 +487,12 @@ fn capture_selected(state: &mut GuiState) {
         Err(err) => {
             set_status(state, &err);
             unsafe {
-                MessageBoxW(Some(state.hwnd), &HSTRING::from(err.as_str()), w!("screencap"), MB_ICONERROR);
+                MessageBoxW(
+                    Some(state.hwnd),
+                    &HSTRING::from(err.as_str()),
+                    w!("screencap"),
+                    MB_ICONERROR,
+                );
             }
         }
     }
@@ -609,7 +663,12 @@ fn create_controls(state: &mut GuiState, hwnd: HWND) {
 }
 
 /// Mirrors `WndProc`.
-unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+unsafe extern "system" fn wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     if msg == WM_NCCREATE {
         let cs = lparam.0 as *const CREATESTRUCTW;
         let params = unsafe { (*cs).lpCreateParams };

@@ -25,9 +25,7 @@ pub fn json_escape(s: &str) -> String {
 
 /// Local time as `2026-07-08T12:34:56.789+09:00`.
 pub fn iso8601_now_local() -> String {
-    Local::now()
-        .format("%Y-%m-%dT%H:%M:%S%.3f%:z")
-        .to_string()
+    Local::now().format("%Y-%m-%dT%H:%M:%S%.3f%:z").to_string()
 }
 
 /// Local time as `20260708_123456_789` for log/screenshot filenames.

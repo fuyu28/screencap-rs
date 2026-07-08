@@ -493,9 +493,8 @@ pub fn parse_args(argv: &[String]) -> ParseResult {
                 || out.cap.window_query.title.is_some()
                 || out.cap.window_query.class_name.is_some();
             if !has_window_target {
-                r.error =
-                    "window target needs one of --hwnd/--pid/--foreground/--title/--class"
-                        .to_string();
+                r.error = "window target needs one of --hwnd/--pid/--foreground/--title/--class"
+                    .to_string();
                 return r;
             }
         } else if out.cap.screen_query.monitor.is_none() && !out.cap.screen_query.virtual_screen {

@@ -63,7 +63,9 @@ pub fn save_png_wic(img: &ImageBuffer, out_path: &str, overwrite: bool) -> Resul
     if hr.is_err() {
         return Err(hr_error("CoInitializeEx failed", hr));
     }
-    let _co_guard = CoInitGuard { active: need_uninit };
+    let _co_guard = CoInitGuard {
+        active: need_uninit,
+    };
 
     let factory: IWICImagingFactory =
         unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }
@@ -94,8 +96,7 @@ pub fn save_png_wic(img: &ImageBuffer, out_path: &str, overwrite: bool) -> Resul
         .map_err(|e| win_error("SetSize failed", e))?;
 
     let mut fmt = GUID_WICPixelFormat32bppBGRA;
-    unsafe { frame.SetPixelFormat(&mut fmt) }
-        .map_err(|e| win_error("SetPixelFormat failed", e))?;
+    unsafe { frame.SetPixelFormat(&mut fmt) }.map_err(|e| win_error("SetPixelFormat failed", e))?;
 
     unsafe { frame.WritePixels(img.height as u32, img.row_pitch as u32, &img.bgra) }
         .map_err(|e| win_error("WritePixels failed", e))?;

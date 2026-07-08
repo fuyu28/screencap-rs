@@ -214,8 +214,7 @@ pub fn resolve_window_target(
 
     let rank = |w: &WindowInfo| -> (bool, bool, i64) {
         let usable = w.visible && !w.iconic && !w.cloaked;
-        let is_root =
-            unsafe { GetAncestor(HWND(w.hwnd as *mut _), GA_ROOT) }.0 as isize == w.hwnd;
+        let is_root = unsafe { GetAncestor(HWND(w.hwnd as *mut _), GA_ROOT) }.0 as isize == w.hwnd;
         (usable, is_root, area(&w.rect))
     };
 
@@ -224,7 +223,9 @@ pub fn resolve_window_target(
     candidates.sort_by_cached_key(|w| std::cmp::Reverse(rank(w)));
 
     let winner = candidates[0].clone();
-    let reason = "matched by filters, selected by priority(visible&&!iconic&&!cloaked > root > max area)".to_string();
+    let reason =
+        "matched by filters, selected by priority(visible&&!iconic&&!cloaked > root > max area)"
+            .to_string();
 
     if let Some(logger) = logger {
         logger.log(

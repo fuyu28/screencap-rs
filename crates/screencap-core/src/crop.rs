@@ -84,10 +84,7 @@ pub fn resolve_crop_rect_screen(
 
 /// Crops `img` in place to the intersection of `crop_screen_rect` and the
 /// image's own screen rect. Errors if they do not overlap.
-pub fn crop_image_in_place(
-    crop_screen_rect: Rect,
-    img: &mut ImageBuffer,
-) -> Result<(), ErrorInfo> {
+pub fn crop_image_in_place(crop_screen_rect: Rect, img: &mut ImageBuffer) -> Result<(), ErrorInfo> {
     let img_rect = Rect {
         left: img.origin_x,
         top: img.origin_y,

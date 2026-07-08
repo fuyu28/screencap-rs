@@ -4,6 +4,7 @@
 
 use std::time::Instant;
 
+use serde_json::{json, Map, Value};
 use windows::Win32::Foundation::{GetLastError, HWND};
 use windows::Win32::Graphics::Gdi::{MonitorFromWindow, MONITOR_DEFAULTTONEAREST};
 use windows::Win32::UI::HiDpi::{
@@ -13,8 +14,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetMessageW, GetSystemMetrics, SetProcessDPIAware, MSG, SM_CXVIRTUALSCREEN,
-    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, WM_HOTKEY,
+    GetMessageW, GetSystemMetrics, SetProcessDPIAware, MSG, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, WM_HOTKEY,
 };
 
 use screencap_core::capture_dxgi::capture_with_dxgi;
@@ -26,7 +27,7 @@ use screencap_core::image_stats::compute_image_stats;
 use screencap_core::logging::{get_build_stamp, get_os_version_string, Logger};
 use screencap_core::monitor_enum::{enumerate_monitors, find_monitor_by_token};
 use screencap_core::types::*;
-use screencap_core::util::{iso8601_now_local, json_escape, to_hex32};
+use screencap_core::util::{iso8601_now_local, to_hex32};
 use screencap_core::window_enum::{enumerate_windows, resolve_window_target};
 
 use crate::cli::{self, ParsedArgs};
@@ -92,15 +93,22 @@ fn pre_parse_bootstrap(argv: &[String]) -> BootstrapOptions {
     b
 }
 
-fn rect_json(r: Rect) -> String {
-    format!(
-        "{{\"left\":{},\"top\":{},\"right\":{},\"bottom\":{}}}",
-        r.left, r.top, r.right, r.bottom
-    )
+fn rect_json(r: Rect) -> Value {
+    json!({
+        "left": r.left,
+        "top": r.top,
+        "right": r.right,
+        "bottom": r.bottom,
+    })
 }
 
-fn crop_rect_json(r: CropRect) -> String {
-    format!("{{\"x\":{},\"y\":{},\"w\":{},\"h\":{}}}", r.x, r.y, r.w, r.h)
+fn crop_rect_json(r: CropRect) -> Value {
+    json!({
+        "x": r.x,
+        "y": r.y,
+        "w": r.w,
+        "h": r.h,
+    })
 }
 
 /// Returns the applied DPI mode string ("per-monitor-v2" or "system").
@@ -130,60 +138,59 @@ fn apply_dpi_mode(requested: DpiMode, logger: Option<&Logger>) -> String {
     set_system()
 }
 
-fn error_json(err: &ErrorInfo) -> String {
-    let mut s = format!(
-        "{{\"message\":\"{}\",\"where\":\"{}\"",
-        json_escape(&err.message),
-        json_escape(&err.where_)
-    );
+fn error_json(err: &ErrorInfo) -> Value {
+    let mut out = Map::new();
+    out.insert("message".to_string(), json!(&err.message));
+    out.insert("where".to_string(), json!(&err.where_));
     if let Some(hr) = err.hresult {
-        s.push_str(&format!(",\"hresult\":\"{}\"", to_hex32(hr)));
+        out.insert("hresult".to_string(), json!(to_hex32(hr)));
     }
     if let Some(w) = err.win32_error {
-        s.push_str(&format!(",\"win32_error\":{w}"));
+        out.insert("win32_error".to_string(), json!(w));
     }
-    s.push('}');
-    s
+    Value::Object(out)
 }
 
-fn windows_json_array(ws: &[WindowInfo]) -> String {
-    let mut s = String::from("[");
-    for (idx, w) in ws.iter().enumerate() {
-        if idx > 0 {
-            s.push(',');
-        }
-        s.push_str(&format!(
-            "{{\"hwnd\":{},\"pid\":{},\"title\":\"{}\",\"class\":\"{}\",\"rect\":{},\"visible\":{},\"iconic\":{},\"cloaked\":{}}}",
-            w.hwnd as u64,
-            w.pid,
-            json_escape(&w.title),
-            json_escape(&w.class_name),
-            rect_json(w.rect),
-            w.visible,
-            w.iconic,
-            w.cloaked,
-        ));
-    }
-    s.push(']');
-    s
+fn window_json(w: &WindowInfo) -> Value {
+    json!({
+        "hwnd": w.hwnd as u64,
+        "pid": w.pid,
+        "title": &w.title,
+        "class": &w.class_name,
+        "rect": rect_json(w.rect),
+        "visible": w.visible,
+        "iconic": w.iconic,
+        "cloaked": w.cloaked,
+    })
 }
 
-fn monitors_json_array(ms: &[MonitorInfo]) -> String {
-    let mut s = String::from("[");
-    for (idx, m) in ms.iter().enumerate() {
-        if idx > 0 {
-            s.push(',');
-        }
-        s.push_str(&format!(
-            "{{\"index\":{},\"name\":\"{}\",\"desktop\":{},\"primary\":{}}}",
-            m.index,
-            json_escape(&m.name),
-            rect_json(m.desktop),
-            m.primary,
-        ));
-    }
-    s.push(']');
-    s
+fn cap_window_json(w: &WindowInfo) -> Value {
+    let mut out = match window_json(w) {
+        Value::Object(map) => map,
+        _ => unreachable!("window_json returns an object"),
+    };
+    out.insert(
+        "client_rect_screen".to_string(),
+        rect_json(w.client_rect_screen),
+    );
+    Value::Object(out)
+}
+
+fn list_monitor_json(m: &MonitorInfo) -> Value {
+    json!({
+        "index": m.index,
+        "name": &m.name,
+        "desktop": rect_json(m.desktop),
+        "primary": m.primary,
+    })
+}
+
+fn cap_monitor_json(m: &MonitorInfo) -> Value {
+    json!({
+        "index": m.index,
+        "desktop": rect_json(m.desktop),
+        "primary": m.primary,
+    })
 }
 
 fn run_list_windows(parsed: &ParsedArgs) -> RunResult {
@@ -191,11 +198,13 @@ fn run_list_windows(parsed: &ParsedArgs) -> RunResult {
     let ws = enumerate_windows();
     rr.ok = true;
     rr.exit_code = 0;
-    rr.json = format!(
-        "{{\"ok\":true,\"command\":\"list windows\",\"timestamp\":\"{}\",\"windows\":{}}}",
-        iso8601_now_local(),
-        windows_json_array(&ws)
-    );
+    rr.json = json!({
+        "ok": true,
+        "command": "list windows",
+        "timestamp": iso8601_now_local(),
+        "windows": ws.iter().map(window_json).collect::<Vec<_>>(),
+    })
+    .to_string();
 
     if !parsed.common.json {
         println!("windows={}", ws.len());
@@ -224,11 +233,13 @@ fn run_list_monitors(parsed: &ParsedArgs) -> RunResult {
     let ms = enumerate_monitors();
     rr.ok = true;
     rr.exit_code = 0;
-    rr.json = format!(
-        "{{\"ok\":true,\"command\":\"list monitors\",\"timestamp\":\"{}\",\"monitors\":{}}}",
-        iso8601_now_local(),
-        monitors_json_array(&ms)
-    );
+    rr.json = json!({
+        "ok": true,
+        "command": "list monitors",
+        "timestamp": iso8601_now_local(),
+        "monitors": ms.iter().map(list_monitor_json).collect::<Vec<_>>(),
+    })
+    .to_string();
 
     if !parsed.common.json {
         println!("monitors={}", ms.len());
@@ -497,58 +508,54 @@ fn run_cap(parsed: &ParsedArgs, logger: Option<&Logger>, dpi_applied: &str) -> R
         h: img.height,
     };
 
-    let mut js = format!(
-        "{{\"ok\":true,\"command\":\"cap\",\"method\":\"{}\",\"target\":\"{}\",\"out_path\":\"{}\",\"format\":\"png\",\"timestamp\":\"{}\",\"duration_ms\":{},\"dpi_mode\":\"{}\"",
-        json_escape(&parsed.cap.method),
-        cli::target_type_name(parsed.cap.target),
-        json_escape(&parsed.cap.out_path),
-        iso8601_now_local(),
-        duration_ms,
-        json_escape(dpi_applied),
+    let mut js = Map::new();
+    js.insert("ok".to_string(), json!(true));
+    js.insert("command".to_string(), json!("cap"));
+    js.insert("method".to_string(), json!(&parsed.cap.method));
+    js.insert(
+        "target".to_string(),
+        json!(cli::target_type_name(parsed.cap.target)),
     );
+    js.insert("out_path".to_string(), json!(&parsed.cap.out_path));
+    js.insert("format".to_string(), json!("png"));
+    js.insert("timestamp".to_string(), json!(iso8601_now_local()));
+    js.insert("duration_ms".to_string(), json!(duration_ms));
+    js.insert("dpi_mode".to_string(), json!(dpi_applied));
 
     if let Some(w) = &ctx.window {
-        js.push_str(&format!(
-            ",\"window\":{{\"hwnd\":{},\"pid\":{},\"title\":\"{}\",\"class\":\"{}\",\"rect\":{},\"client_rect_screen\":{},\"visible\":{},\"iconic\":{},\"cloaked\":{}}}",
-            w.hwnd as u64,
-            w.pid,
-            json_escape(&w.title),
-            json_escape(&w.class_name),
-            rect_json(w.rect),
-            rect_json(w.client_rect_screen),
-            w.visible,
-            w.iconic,
-            w.cloaked,
-        ));
+        js.insert("window".to_string(), cap_window_json(w));
     }
 
     if let Some(m) = &ctx.monitor {
-        js.push_str(&format!(
-            ",\"monitor\":{{\"index\":{},\"desktop\":{},\"primary\":{}}}",
-            m.index,
-            rect_json(m.desktop),
-            m.primary,
-        ));
+        js.insert("monitor".to_string(), cap_monitor_json(m));
     }
 
-    js.push_str(&format!(
-        ",\"crop\":{{\"mode\":\"{}\",\"rect\":{},\"pad\":{{\"l\":{},\"t\":{},\"r\":{},\"b\":{}}}}}",
-        cli::crop_mode_name(crop_mode),
-        crop_rect_json(crop_out),
-        parsed.cap.pad.l,
-        parsed.cap.pad.t,
-        parsed.cap.pad.r,
-        parsed.cap.pad.b,
-    ));
-
-    js.push_str(&format!(
-        ",\"image_stats\":{{\"black_ratio\":{},\"transparent_ratio\":{},\"avg_luma\":{}}},\"error\":null}}",
-        stats.black_ratio, stats.transparent_ratio, stats.avg_luma
-    ));
+    js.insert(
+        "crop".to_string(),
+        json!({
+            "mode": cli::crop_mode_name(crop_mode),
+            "rect": crop_rect_json(crop_out),
+            "pad": {
+                "l": parsed.cap.pad.l,
+                "t": parsed.cap.pad.t,
+                "r": parsed.cap.pad.r,
+                "b": parsed.cap.pad.b,
+            },
+        }),
+    );
+    js.insert(
+        "image_stats".to_string(),
+        json!({
+            "black_ratio": stats.black_ratio,
+            "transparent_ratio": stats.transparent_ratio,
+            "avg_luma": stats.avg_luma,
+        }),
+    );
+    js.insert("error".to_string(), Value::Null);
 
     rr.ok = true;
     rr.exit_code = 0;
-    rr.json = js;
+    rr.json = Value::Object(js).to_string();
 
     if let Some(lg) = logger {
         lg.log(
@@ -586,17 +593,23 @@ fn build_failure_json(
     duration_ms: i32,
     err: &ErrorInfo,
 ) -> String {
-    format!(
-        "{{\"ok\":false,\"command\":\"{}\",\"method\":\"{}\",\"target\":\"{}\",\"out_path\":\"{}\",\"format\":\"png\",\"timestamp\":\"{}\",\"duration_ms\":{},\"dpi_mode\":\"{}\",\"window\":null,\"monitor\":null,\"crop\":null,\"image_stats\":null,\"error\":{}}}",
-        json_escape(command),
-        json_escape(method),
-        json_escape(target),
-        json_escape(out_path),
-        iso8601_now_local(),
-        duration_ms,
-        json_escape(dpi_mode),
-        error_json(err),
-    )
+    json!({
+        "ok": false,
+        "command": command,
+        "method": method,
+        "target": target,
+        "out_path": out_path,
+        "format": "png",
+        "timestamp": iso8601_now_local(),
+        "duration_ms": duration_ms,
+        "dpi_mode": dpi_mode,
+        "window": Value::Null,
+        "monitor": Value::Null,
+        "crop": Value::Null,
+        "image_stats": Value::Null,
+        "error": error_json(err),
+    })
+    .to_string()
 }
 
 fn wait_for_hotkey(parsed: &ParsedArgs, logger: Option<&Logger>) -> Result<(), ErrorInfo> {

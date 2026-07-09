@@ -3,6 +3,7 @@ use crate::util::{build_timestamp_for_filename, iso8601_now_local};
 use std::fs::{self, File};
 use std::io::{self, Write as _};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Mutex;
 
 use windows::core::{s, w};
@@ -11,13 +12,15 @@ use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 struct LoggerState {
     file: Option<File>,
     file_path: PathBuf,
-    min_level: LogLevel,
 }
 
 /// Thread-safe file logger. Log lines: `[<iso8601>] [<level>] <msg>\n`,
-/// flushed per line. File name: `<timestamp>_<pid>_<command>.log` in log_dir.
+/// written per line. File name: `<timestamp>_<pid>_<command>.log` in log_dir.
 pub struct Logger {
     inner: Mutex<LoggerState>,
+    // Kept outside the mutex so log() can reject below-threshold messages
+    // without locking.
+    min_level: AtomicU8,
 }
 
 impl Default for Logger {
@@ -26,8 +29,8 @@ impl Default for Logger {
             inner: Mutex::new(LoggerState {
                 file: None,
                 file_path: PathBuf::new(),
-                min_level: LogLevel::Info,
             }),
+            min_level: AtomicU8::new(LogLevel::Info as u8),
         }
     }
 }
@@ -43,8 +46,9 @@ impl Logger {
         command_name: &str,
         level: LogLevel,
     ) -> io::Result<()> {
+        self.min_level.store(level as u8, Ordering::Relaxed);
+
         let mut state = self.inner.lock().unwrap();
-        state.min_level = level;
 
         let dir = PathBuf::from(log_dir_utf8);
         fs::create_dir_all(&dir)?;
@@ -69,21 +73,21 @@ impl Logger {
     }
 
     pub fn log(&self, level: LogLevel, msg: &str) {
-        let mut state = self.inner.lock().unwrap();
-        if level < state.min_level {
+        if (level as u8) < self.min_level.load(Ordering::Relaxed) {
             return;
         }
-        let Some(file) = state.file.as_mut() else {
-            return;
-        };
         let line = format!(
             "[{}] [{}] {}\n",
             iso8601_now_local(),
             log_level_name(level),
             msg
         );
+
+        let mut state = self.inner.lock().unwrap();
+        let Some(file) = state.file.as_mut() else {
+            return;
+        };
         let _ = file.write_all(line.as_bytes());
-        let _ = file.flush();
     }
 
     pub fn file_path(&self) -> PathBuf {

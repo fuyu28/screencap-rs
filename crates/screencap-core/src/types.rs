@@ -276,8 +276,8 @@ impl Default for CapOptions {
 }
 
 pub struct CaptureContext<'a> {
-    pub cap: CapOptions,
-    pub common: CommonOptions,
+    pub cap: &'a CapOptions,
+    pub common: &'a CommonOptions,
     pub window: Option<WindowInfo>,
     pub monitor: Option<MonitorInfo>,
     pub capture_rect_screen: Rect,

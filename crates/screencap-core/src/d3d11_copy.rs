@@ -109,13 +109,15 @@ pub(crate) fn copy_texture_to_image(
     let mapped = MappedTexture::new(context, &staging, where_)?;
 
     let row_pitch = width * 4;
-    let mut bgra = vec![0u8; (row_pitch as usize) * (height as usize)];
-    unsafe {
-        for y in 0..height {
-            let src = mapped.data().add((y as usize) * mapped.row_pitch());
-            let dst = bgra.as_mut_ptr().add((y as usize) * (row_pitch as usize));
-            std::ptr::copy_nonoverlapping(src, dst, row_pitch as usize);
-        }
+    let mut bgra = Vec::with_capacity((row_pitch as usize) * (height as usize));
+    for y in 0..height {
+        let src = unsafe {
+            std::slice::from_raw_parts(
+                mapped.data().add((y as usize) * mapped.row_pitch()),
+                row_pitch as usize,
+            )
+        };
+        bgra.extend_from_slice(src);
     }
 
     Ok(ImageBuffer {

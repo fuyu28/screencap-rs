@@ -98,8 +98,12 @@ fn contains_i(hay: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return true;
     }
-    hay.to_ascii_lowercase()
-        .contains(&needle.to_ascii_lowercase())
+    // windows() panics on a zero-size window, so the empty-needle check above
+    // must stay first. ASCII-case-insensitive containment, equivalent to the
+    // previous to_ascii_lowercase().contains() since that only folds ASCII.
+    hay.as_bytes()
+        .windows(needle.len())
+        .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
 extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> windows::core::BOOL {

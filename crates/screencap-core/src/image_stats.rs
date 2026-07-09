@@ -42,3 +42,39 @@ pub fn compute_image_stats(img: &ImageBuffer) -> ImageStats {
         / pixels as f64;
     s
 }
+
+/// Lighter variant of `compute_image_stats` for callers that only need
+/// (black_ratio, transparent_ratio) and don't want the avg_luma sums
+/// accumulated. Zero ratios for empty images.
+pub fn compute_frame_ratios(img: &ImageBuffer) -> (f64, f64) {
+    if img.width <= 0 || img.height <= 0 || img.bgra.is_empty() {
+        return (0.0, 0.0);
+    }
+
+    let pixels = (img.width as u64) * (img.height as u64);
+    let mut black: u64 = 0;
+    let mut transparent: u64 = 0;
+    let row_len = (img.width as usize) * 4;
+
+    for y in 0..img.height {
+        let row_start = (y as usize) * (img.row_pitch as usize);
+        let row = &img.bgra[row_start..row_start + row_len];
+        for px in row.chunks_exact(4) {
+            let b = px[0];
+            let g = px[1];
+            let r = px[2];
+            let a = px[3];
+            if r == 0 && g == 0 && b == 0 {
+                black += 1;
+            }
+            if a == 0 {
+                transparent += 1;
+            }
+        }
+    }
+
+    (
+        black as f64 / pixels as f64,
+        transparent as f64 / pixels as f64,
+    )
+}

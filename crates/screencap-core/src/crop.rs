@@ -91,12 +91,11 @@ pub fn crop_image_in_place(crop_screen_rect: Rect, img: &mut ImageBuffer) -> Res
     let nw = c.width();
     let nh = c.height();
 
-    let mut out = vec![0u8; (nw as usize) * (nh as usize) * 4];
+    let mut out = Vec::with_capacity((nw as usize) * (nh as usize) * 4);
     for y in 0..nh as usize {
         let src_start = (y0 + y) * (img.row_pitch as usize) + x0 * 4;
         let src = &img.bgra[src_start..src_start + (nw as usize) * 4];
-        let dst_start = y * (nw as usize) * 4;
-        out[dst_start..dst_start + (nw as usize) * 4].copy_from_slice(src);
+        out.extend_from_slice(src);
     }
 
     img.width = nw;

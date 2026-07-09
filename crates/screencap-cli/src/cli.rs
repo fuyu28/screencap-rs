@@ -10,7 +10,7 @@ pub struct ParsedArgs {
     pub command: CommandType,
     pub common: CommonOptions,
     pub cap: CapOptions,
-    pub raw_args: Vec<String>,
+    pub raw_args: String,
 }
 
 #[derive(Parser, Debug)]
@@ -408,7 +408,7 @@ pub fn parse_args(argv: &[String]) -> Result<ParsedArgs, clap::Error> {
     }
 
     let cli = CliArgs::try_parse_from(argv)?;
-    let raw_args = argv.to_vec();
+    let raw_args = argv.join(" ");
     let common = cli.common.into();
 
     let (command, cap) = match cli.command {

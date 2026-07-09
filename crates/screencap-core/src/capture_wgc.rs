@@ -157,8 +157,8 @@ fn copy_frame_to_image(
 }
 
 fn is_probably_usable_frame(img: &ImageBuffer) -> bool {
-    let stats = crate::image_stats::compute_image_stats(img);
-    stats.transparent_ratio < 0.98 && stats.black_ratio < 0.98
+    let (black_ratio, transparent_ratio) = crate::image_stats::compute_frame_ratios(img);
+    transparent_ratio < 0.98 && black_ratio < 0.98
 }
 
 struct WgcResources<'a> {
@@ -205,6 +205,15 @@ fn run_capture_loop(
     let timeout = Duration::from_millis(ctx.common.timeout_ms.max(0) as u64);
     let deadline = Instant::now() + timeout;
 
+    // Loop-invariant: the same origin is used for every frame in this loop.
+    let origin = if ctx.cap.method == "wgc-window" || ctx.cap.method == "wgc-window2" {
+        ctx.window
+            .as_ref()
+            .map_or(ctx.capture_rect_screen, |w| w.dwm_frame_rect)
+    } else {
+        ctx.capture_rect_screen
+    };
+
     for _ in 0..MAX_FRAMES {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -246,14 +255,6 @@ fn run_capture_loop(
                         continue;
                     }
                 }
-
-                let origin = if ctx.cap.method == "wgc-window" || ctx.cap.method == "wgc-window2" {
-                    ctx.window
-                        .as_ref()
-                        .map_or(ctx.capture_rect_screen, |w| w.dwm_frame_rect)
-                } else {
-                    ctx.capture_rect_screen
-                };
 
                 match copy_frame_to_image(&frame, res.d3d_device, res.d3d_context, origin) {
                     Ok(candidate) => {

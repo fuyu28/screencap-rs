@@ -30,11 +30,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetAncestor, GetClientRect, GetMessageW,
     GetWindowLongPtrW, LoadCursorW, MessageBoxW, MoveWindow, PostMessageW, PostQuitMessage,
     RegisterClassW, SendMessageW, SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage,
-    CBS_DROPDOWNLIST, CB_ADDSTRING, CB_GETCURSEL, CB_GETLBTEXT, CB_SETCURSEL, CREATESTRUCTW,
-    CW_USEDEFAULT, ES_AUTOHSCROLL, GA_ROOT, GWLP_USERDATA, HMENU, IDC_ARROW, MB_ICONERROR,
-    MB_ICONINFORMATION, MSG, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_COMMAND, WM_CREATE,
-    WM_DESTROY, WM_NCCREATE, WM_NOTIFY, WM_SIZE, WNDCLASSW, WS_CHILD, WS_EX_CLIENTEDGE,
-    WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    CBS_DROPDOWNLIST, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, CREATESTRUCTW, CW_USEDEFAULT,
+    ES_AUTOHSCROLL, GA_ROOT, GWLP_USERDATA, HMENU, IDC_ARROW, MB_ICONERROR, MB_ICONINFORMATION,
+    MSG, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_COMMAND, WM_CREATE, WM_DESTROY,
+    WM_NCCREATE, WM_NOTIFY, WM_SIZE, WNDCLASSW, WS_CHILD, WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW,
+    WS_VISIBLE,
 };
 
 use screencap_core::types::WindowInfo;
@@ -248,7 +248,6 @@ fn is_pickable(w: &WindowInfo) -> bool {
 }
 
 fn refresh_windows(state: &mut GuiState) {
-    state.windows.clear();
     unsafe {
         SendMessageW(
             state.list,
@@ -333,22 +332,12 @@ fn browse_output(state: &mut GuiState) {
     }
 }
 
-fn selected_method(state: &GuiState) -> String {
+fn selected_method(state: &GuiState) -> &'static str {
     let idx = unsafe { SendMessageW(state.method, CB_GETCURSEL, None, None) }.0 as i32;
     if idx < 0 {
-        return "wgc-window".to_string();
+        return METHODS[0];
     }
-    let mut buf = [0u16; 64];
-    unsafe {
-        SendMessageW(
-            state.method,
-            CB_GETLBTEXT,
-            Some(WPARAM(idx as usize)),
-            Some(LPARAM(buf.as_mut_ptr() as isize)),
-        );
-    }
-    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-    utf8_from_wide(&buf[..len])
+    METHODS.get(idx as usize).copied().unwrap_or(METHODS[0])
 }
 
 fn selected_window_index(state: &GuiState) -> Option<usize> {
@@ -487,7 +476,7 @@ fn capture_selected(state: &mut GuiState) {
     // thread boundary as an isize and rebuild the HWND on the other side.
     let hwnd_raw = state.hwnd.0 as isize;
     std::thread::spawn(move || {
-        let result = run_capture_process(&window, &method, &out_path);
+        let result = run_capture_process(&window, method, &out_path);
         let (wparam, lparam): (usize, isize) = match result {
             Ok(()) => (1, 0),
             Err(err) => (0, Box::into_raw(Box::new(err)) as isize),

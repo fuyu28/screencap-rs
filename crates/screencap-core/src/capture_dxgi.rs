@@ -92,7 +92,7 @@ fn acquire_dup_frame(
 
     let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
     let mut resource: Option<IDXGIResource> = None;
-    unsafe { dup.AcquireNextFrame(timeout_ms as u32, &mut frame_info, &mut resource) }
+    unsafe { dup.AcquireNextFrame(timeout_ms.max(0) as u32, &mut frame_info, &mut resource) }
         .map_err(|e| hr_error("AcquireNextFrame failed", "AcquireDupFrame", &e))?;
     let _frame = DupFrameGuard { dup };
     let resource = resource.expect("AcquireNextFrame succeeded without a resource");
@@ -103,6 +103,13 @@ fn acquire_dup_frame(
 
     let mut desc = D3D11_TEXTURE2D_DESC::default();
     unsafe { tex.GetDesc(&mut desc) };
+
+    if desc.Width != capture_rect.width() as u32 || desc.Height != capture_rect.height() as u32 {
+        return Err(ErrorInfo::new(
+            "duplication texture size does not match monitor rect (rotated display not supported)",
+            "AcquireDupFrame",
+        ));
+    }
 
     let image = copy_texture_to_image(
         &device,
@@ -147,13 +154,7 @@ pub fn capture_with_dxgi(ctx: &CaptureContext) -> Result<(ImageBuffer, i32, i32)
     }
     let monitor_rect = Rect::from(mi.rcMonitor);
 
-    let mut full = acquire_dup_frame(&output, &adapter, ctx.common.timeout_ms, monitor_rect)?;
-
-    if ctx.cap.force_alpha_255 {
-        for i in (3..full.bgra.len()).step_by(4) {
-            full.bgra[i] = 0xFF;
-        }
-    }
+    let full = acquire_dup_frame(&output, &adapter, ctx.common.timeout_ms, monitor_rect)?;
 
     Ok((full, ai, oi))
 }

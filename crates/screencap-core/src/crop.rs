@@ -38,8 +38,8 @@ pub fn resolve_crop_rect_screen(
             Some(m) => Rect {
                 left: m.x,
                 top: m.y,
-                right: m.x + m.w,
-                bottom: m.y + m.h,
+                right: m.x.saturating_add(m.w),
+                bottom: m.y.saturating_add(m.h),
             },
             None => {
                 return Err(ErrorInfo::new(
@@ -50,10 +50,10 @@ pub fn resolve_crop_rect_screen(
         },
     };
 
-    base.left -= pad.l;
-    base.top -= pad.t;
-    base.right += pad.r;
-    base.bottom += pad.b;
+    base.left = base.left.saturating_sub(pad.l);
+    base.top = base.top.saturating_sub(pad.t);
+    base.right = base.right.saturating_add(pad.r);
+    base.bottom = base.bottom.saturating_add(pad.b);
 
     let clipped = intersect(base, capture_screen_rect);
     if !clipped.is_valid() {

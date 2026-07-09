@@ -5,9 +5,9 @@ use std::ffi::c_void;
 
 use windows::Win32::Foundation::{GetLastError, HWND};
 use windows::Win32::Graphics::Gdi::{
-    BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, GetWindowDC,
-    ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT, DIB_RGB_COLORS,
-    HBITMAP, HDC, HGDIOBJ, SRCCOPY,
+    BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GdiFlush, GetDC,
+    GetWindowDC, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT,
+    DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ, SRCCOPY,
 };
 use windows::Win32::UI::WindowsAndMessaging::PW_RENDERFULLCONTENT;
 
@@ -186,6 +186,11 @@ fn capture_with_dib(
     let _selected = SelectedObject::new(mem_dc.get(), dib.as_object());
 
     draw(mem_dc.get())?;
+
+    // CreateDIBSection's bits must be flushed before direct access: GDI may
+    // batch drawing operations, and reading the buffer without a flush can
+    // observe stale or zeroed pixels.
+    let _ = unsafe { GdiFlush() };
 
     let row_pitch = w * 4;
     let len = row_pitch as usize * h as usize;

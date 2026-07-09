@@ -38,10 +38,10 @@ struct CommonCliOptions {
     #[arg(long, global = true)]
     json: bool,
 
-    #[arg(long, global = true, default_value_t = 700)]
+    #[arg(long, global = true, default_value_t = 700, value_parser = clap::value_parser!(i32).range(0..))]
     timeout_ms: i32,
 
-    #[arg(long, global = true, default_value_t = 0)]
+    #[arg(long, global = true, default_value_t = 0, value_parser = clap::value_parser!(i32).range(0..))]
     retry: i32,
 
     #[arg(long, global = true)]

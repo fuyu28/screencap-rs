@@ -28,11 +28,11 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetAncestor, GetClientRect, GetMessageW,
-    GetWindowLongPtrW, LoadCursorW, MessageBoxW, MoveWindow, PostQuitMessage, RegisterClassW,
-    SendMessageW, SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage,
+    GetWindowLongPtrW, LoadCursorW, MessageBoxW, MoveWindow, PostMessageW, PostQuitMessage,
+    RegisterClassW, SendMessageW, SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage,
     CBS_DROPDOWNLIST, CB_ADDSTRING, CB_GETCURSEL, CB_GETLBTEXT, CB_SETCURSEL, CREATESTRUCTW,
     CW_USEDEFAULT, ES_AUTOHSCROLL, GA_ROOT, GWLP_USERDATA, HMENU, IDC_ARROW, MB_ICONERROR,
-    MB_ICONINFORMATION, MSG, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_COMMAND, WM_CREATE,
+    MB_ICONINFORMATION, MSG, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_COMMAND, WM_CREATE,
     WM_DESTROY, WM_NCCREATE, WM_NOTIFY, WM_SIZE, WNDCLASSW, WS_CHILD, WS_EX_CLIENTEDGE,
     WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
@@ -48,6 +48,13 @@ const ID_OUT: u16 = 1004;
 const ID_BROWSE: u16 = 1005;
 const ID_CAPTURE: u16 = 1006;
 const ID_STATUS: u16 = 1007;
+
+/// Posted from the capture worker thread to the GUI thread once
+/// screencap-cli.exe has finished (or failed to start). `WPARAM` is 1 for
+/// success, 0 for failure; on failure `LPARAM` carries a pointer to a
+/// heap-allocated `String` (boxed via `Box::into_raw`) with the exact error
+/// text, which the handler reclaims with `Box::from_raw`.
+const WM_APP_CAPTURE_DONE: u32 = WM_APP + 1;
 
 const METHODS: [&str; 4] = [
     "wgc-window",
@@ -69,6 +76,13 @@ struct GuiState {
     capture: HWND,
     status: HWND,
     windows: Vec<WindowInfo>,
+    /// True while a capture worker thread is in flight; further capture
+    /// requests are ignored until it completes.
+    capturing: bool,
+    /// Output path for the in-flight capture, stashed here so the
+    /// `WM_APP_CAPTURE_DONE` handler can build the "Saved: ..." status text
+    /// without threading it through the posted message.
+    pending_out: String,
 }
 
 fn control_id(id: u16) -> HMENU {
@@ -416,7 +430,18 @@ fn run_capture_process(window: &WindowInfo, method: &str, out_path: &str) -> Res
     }
 }
 
+/// Kicks off a capture on a worker thread so the message loop stays
+/// responsive (screencap-cli.exe can take up to ~10s with WGC retries).
+/// Completion is reported back via `WM_APP_CAPTURE_DONE`; see
+/// [`wnd_proc`]'s handler for that message.
 fn capture_selected(state: &mut GuiState) {
+    if state.capturing {
+        // A capture is already in flight; ignore the request (the Capture
+        // button is disabled too, but double-click on the list can still
+        // reach here).
+        return;
+    }
+
     let idx = match selected_window_index(state) {
         Some(idx) if idx < state.windows.len() => idx,
         _ => {
@@ -445,6 +470,11 @@ fn capture_selected(state: &mut GuiState) {
         return;
     }
 
+    let window = state.windows[idx].clone();
+    let method = selected_method(state);
+
+    state.capturing = true;
+    state.pending_out = out_path.clone();
     unsafe {
         let _ = EnableWindow(state.capture, false);
     }
@@ -453,27 +483,53 @@ fn capture_selected(state: &mut GuiState) {
         let _ = UpdateWindow(state.hwnd);
     }
 
-    let window = state.windows[idx].clone();
-    let method = selected_method(state);
-    let result = run_capture_process(&window, &method, &out_path);
+    // HWND wraps a raw pointer and is not Send; carry the bits across the
+    // thread boundary as an isize and rebuild the HWND on the other side.
+    let hwnd_raw = state.hwnd.0 as isize;
+    std::thread::spawn(move || {
+        let result = run_capture_process(&window, &method, &out_path);
+        let (wparam, lparam): (usize, isize) = match result {
+            Ok(()) => (1, 0),
+            Err(err) => (0, Box::into_raw(Box::new(err)) as isize),
+        };
+        let hwnd = HWND(hwnd_raw as *mut c_void);
+        // PostMessageW is safe to call from a non-UI thread; the wndproc on
+        // the GUI thread will pick this up on its next GetMessageW loop.
+        let _ = unsafe {
+            PostMessageW(
+                Some(hwnd),
+                WM_APP_CAPTURE_DONE,
+                WPARAM(wparam),
+                LPARAM(lparam),
+            )
+        };
+    });
+}
 
+/// Handles `WM_APP_CAPTURE_DONE`, posted by the worker thread spawned in
+/// [`capture_selected`]. Restores the UI to its idle state and shows the
+/// same success/failure text the old synchronous path produced.
+fn on_capture_done(state: &mut GuiState, wparam: WPARAM, lparam: LPARAM) {
+    state.capturing = false;
     unsafe {
         let _ = EnableWindow(state.capture, true);
     }
 
-    match result {
-        Ok(()) => set_status(state, &format!("Saved: {out_path}")),
-        Err(err) => {
-            set_status(state, &err);
-            unsafe {
-                MessageBoxW(
-                    Some(state.hwnd),
-                    &HSTRING::from(err.as_str()),
-                    w!("screencap"),
-                    MB_ICONERROR,
-                );
-            }
-        }
+    if wparam.0 == 1 {
+        set_status(state, &format!("Saved: {}", state.pending_out));
+        return;
+    }
+
+    // Reclaim the boxed error string handed off by the worker thread.
+    let err = *unsafe { Box::from_raw(lparam.0 as *mut String) };
+    set_status(state, &err);
+    unsafe {
+        MessageBoxW(
+            Some(state.hwnd),
+            &HSTRING::from(err.as_str()),
+            w!("screencap"),
+            MB_ICONERROR,
+        );
     }
 }
 
@@ -670,6 +726,12 @@ unsafe extern "system" fn wnd_proc(
         WM_DESTROY => {
             unsafe {
                 PostQuitMessage(0);
+            }
+            return LRESULT(0);
+        }
+        WM_APP_CAPTURE_DONE => {
+            if let Some(state) = unsafe { state_ptr.as_mut() } {
+                on_capture_done(state, wparam, lparam);
             }
             return LRESULT(0);
         }

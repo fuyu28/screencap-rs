@@ -6,7 +6,9 @@ use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_ContainerFormatPng, GUID_WICPixelFormat32bppBGRA,
     IWICImagingFactory, WICBitmapEncoderNoCache,
 };
-use windows::Win32::Storage::FileSystem::{GetFileAttributesW, INVALID_FILE_ATTRIBUTES};
+use windows::Win32::Storage::FileSystem::{
+    DeleteFileW, GetFileAttributesW, INVALID_FILE_ATTRIBUTES,
+};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
 };
@@ -76,32 +78,53 @@ pub fn save_png_wic(img: &ImageBuffer, out_path: &str, overwrite: bool) -> Resul
     unsafe { stream.InitializeFromFilename(wide_path, GENERIC_WRITE.0) }
         .map_err(|e| win_error("InitializeFromFilename failed", e))?;
 
-    let encoder = unsafe { factory.CreateEncoder(&GUID_ContainerFormatPng, std::ptr::null()) }
-        .map_err(|e| win_error("CreateEncoder failed", e))?;
+    // InitializeFromFilename already created/truncated the output file. If
+    // any later step fails, delete the partial file instead of leaving a
+    // 0-byte (or corrupt) file behind that would trip the overwrite guard on
+    // retry.
+    let encode = || -> Result<(), ErrorInfo> {
+        let encoder = unsafe { factory.CreateEncoder(&GUID_ContainerFormatPng, std::ptr::null()) }
+            .map_err(|e| win_error("CreateEncoder failed", e))?;
 
-    unsafe { encoder.Initialize(&stream, WICBitmapEncoderNoCache) }
-        .map_err(|e| win_error("Encoder Initialize failed", e))?;
+        unsafe { encoder.Initialize(&stream, WICBitmapEncoderNoCache) }
+            .map_err(|e| win_error("Encoder Initialize failed", e))?;
 
-    let mut frame = None;
-    let mut props = None;
-    unsafe { encoder.CreateNewFrame(&mut frame, &mut props) }
-        .map_err(|e| win_error("CreateNewFrame failed", e))?;
-    let frame = frame.ok_or_else(|| ErrorInfo::new("CreateNewFrame failed", WHERE))?;
+        let mut frame = None;
+        let mut props = None;
+        unsafe { encoder.CreateNewFrame(&mut frame, &mut props) }
+            .map_err(|e| win_error("CreateNewFrame failed", e))?;
+        let frame = frame.ok_or_else(|| ErrorInfo::new("CreateNewFrame failed", WHERE))?;
 
-    unsafe { frame.Initialize(props.as_ref()) }
-        .map_err(|e| win_error("Frame Initialize failed", e))?;
+        unsafe { frame.Initialize(props.as_ref()) }
+            .map_err(|e| win_error("Frame Initialize failed", e))?;
 
-    unsafe { frame.SetSize(img.width as u32, img.height as u32) }
-        .map_err(|e| win_error("SetSize failed", e))?;
+        unsafe { frame.SetSize(img.width as u32, img.height as u32) }
+            .map_err(|e| win_error("SetSize failed", e))?;
 
-    let mut fmt = GUID_WICPixelFormat32bppBGRA;
-    unsafe { frame.SetPixelFormat(&mut fmt) }.map_err(|e| win_error("SetPixelFormat failed", e))?;
+        let mut fmt = GUID_WICPixelFormat32bppBGRA;
+        unsafe { frame.SetPixelFormat(&mut fmt) }
+            .map_err(|e| win_error("SetPixelFormat failed", e))?;
 
-    unsafe { frame.WritePixels(img.height as u32, img.row_pitch as u32, &img.bgra) }
-        .map_err(|e| win_error("WritePixels failed", e))?;
+        unsafe { frame.WritePixels(img.height as u32, img.row_pitch as u32, &img.bgra) }
+            .map_err(|e| win_error("WritePixels failed", e))?;
 
-    unsafe { frame.Commit() }.map_err(|e| win_error("Frame Commit failed", e))?;
-    unsafe { encoder.Commit() }.map_err(|e| win_error("Encoder Commit failed", e))?;
+        unsafe { frame.Commit() }.map_err(|e| win_error("Frame Commit failed", e))?;
+        unsafe { encoder.Commit() }.map_err(|e| win_error("Encoder Commit failed", e))?;
+
+        Ok(())
+    };
+
+    let result = encode();
+    if let Err(e) = result {
+        // The stream still holds the file open with GENERIC_WRITE (and no
+        // FILE_SHARE_DELETE), so it must be released before DeleteFileW can
+        // succeed.
+        drop(stream);
+        unsafe {
+            let _ = DeleteFileW(wide_path);
+        }
+        return Err(e);
+    }
 
     Ok(())
 }

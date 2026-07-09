@@ -5,7 +5,7 @@
 //! (transparent_ratio < 0.98 && black_ratio < 0.98).
 
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use windows::core::{IInspectable, Interface};
 use windows::Foundation::TypedEventHandler;
@@ -14,6 +14,7 @@ use windows::Graphics::Capture::{
 };
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Graphics::DirectX::DirectXPixelFormat;
+use windows::Graphics::SizeInt32;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
@@ -32,6 +33,8 @@ use crate::logging::Logger;
 use crate::types::{CaptureContext, ErrorInfo, ImageBuffer, LogLevel, Rect};
 
 const MAX_FRAMES: usize = 5;
+const FRAME_POOL_BUFFERS: i32 = 1;
+const FRAME_POOL_PIXEL_FORMAT: DirectXPixelFormat = DirectXPixelFormat::B8G8R8A8UIntNormalized;
 
 fn to_err(e: windows::core::Error, where_: &str) -> ErrorInfo {
     ErrorInfo::with_hresult(e.message(), where_, e.code().0 as u32)
@@ -158,6 +161,14 @@ fn is_probably_usable_frame(img: &ImageBuffer) -> bool {
     stats.transparent_ratio < 0.98 && stats.black_ratio < 0.98
 }
 
+struct WgcResources<'a> {
+    frame_pool: &'a Direct3D11CaptureFramePool,
+    session: &'a GraphicsCaptureSession,
+    winrt_device: &'a IDirect3DDevice,
+    d3d_device: &'a ID3D11Device,
+    d3d_context: &'a ID3D11DeviceContext,
+}
+
 /// Registers `FrameArrived`, starts the session, and receives up to
 /// `MAX_FRAMES` frames looking for a usable one. The event handler only
 /// forwards frames through a channel, so logging and image processing stay on
@@ -165,10 +176,8 @@ fn is_probably_usable_frame(img: &ImageBuffer) -> bool {
 fn run_capture_loop(
     ctx: &CaptureContext,
     logger: Option<&Logger>,
-    frame_pool: &Direct3D11CaptureFramePool,
-    session: &GraphicsCaptureSession,
-    d3d_device: &ID3D11Device,
-    d3d_context: &ID3D11DeviceContext,
+    res: &WgcResources,
+    initial_pool_size: SizeInt32,
 ) -> Result<ImageBuffer, ErrorInfo> {
     let (tx, rx) = mpsc::channel::<Direct3D11CaptureFrame>();
     let handler =
@@ -180,33 +189,73 @@ fn run_capture_loop(
             }
             Ok(())
         });
-    let token = frame_pool
+    let token = res
+        .frame_pool
         .FrameArrived(&handler)
         .map_err(|e| to_err(e, "CaptureWithWgc"))?;
 
     wgc_log(logger, "start capture");
-    session
+    res.session
         .StartCapture()
         .map_err(|e| to_err(e, "CaptureWithWgc"))?;
 
     let mut best: Option<ImageBuffer> = None;
     let mut copy_err: Option<ErrorInfo> = None;
+    let mut pool_size = initial_pool_size;
     let timeout = Duration::from_millis(ctx.common.timeout_ms.max(0) as u64);
+    let deadline = Instant::now() + timeout;
 
     for _ in 0..MAX_FRAMES {
-        match rx.recv_timeout(timeout) {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            wgc_log(logger, "timeout deadline reached");
+            break;
+        }
+        match rx.recv_timeout(remaining) {
             Ok(frame) => {
                 wgc_log(logger, "frame arrived");
+
+                // The window can grow between pool creation (at item.Size())
+                // and frame arrival; when that happens ContentSize outgrows
+                // the pool's texture size, and the frame must be dropped
+                // while the pool is recreated at the new size so the next
+                // frame arrives un-clamped.
+                if let Ok(content_size) = frame.ContentSize() {
+                    if content_size.Width != pool_size.Width
+                        || content_size.Height != pool_size.Height
+                    {
+                        wgc_log(
+                            logger,
+                            &format!(
+                                "content size changed {}x{} -> {}x{}, recreating pool",
+                                pool_size.Width,
+                                pool_size.Height,
+                                content_size.Width,
+                                content_size.Height
+                            ),
+                        );
+                        match res.frame_pool.Recreate(
+                            res.winrt_device,
+                            FRAME_POOL_PIXEL_FORMAT,
+                            FRAME_POOL_BUFFERS,
+                            content_size,
+                        ) {
+                            Ok(()) => pool_size = content_size,
+                            Err(e) => copy_err = Some(to_err(e, "CaptureWithWgc")),
+                        }
+                        continue;
+                    }
+                }
 
                 let origin = if ctx.cap.method == "wgc-window" || ctx.cap.method == "wgc-window2" {
                     ctx.window
                         .as_ref()
-                        .map_or(ctx.capture_rect_screen, |w| w.rect)
+                        .map_or(ctx.capture_rect_screen, |w| w.dwm_frame_rect)
                 } else {
                     ctx.capture_rect_screen
                 };
 
-                match copy_frame_to_image(&frame, d3d_device, d3d_context, origin) {
+                match copy_frame_to_image(&frame, res.d3d_device, res.d3d_context, origin) {
                     Ok(candidate) => {
                         wgc_log(
                             logger,
@@ -231,7 +280,7 @@ fn run_capture_loop(
     }
 
     wgc_log(logger, "revoke frame handler");
-    let _ = frame_pool.RemoveFrameArrived(token);
+    let _ = res.frame_pool.RemoveFrameArrived(token);
 
     match best {
         Some(img) => Ok(img),
@@ -290,8 +339,8 @@ pub fn capture_with_wgc(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> 
     wgc_log(logger, "create frame pool");
     let frame_pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
         &winrt_device,
-        DirectXPixelFormat::B8G8R8A8UIntNormalized,
-        1,
+        FRAME_POOL_PIXEL_FORMAT,
+        FRAME_POOL_BUFFERS,
         size,
     )
     .map_err(|e| to_err(e, "CaptureWithWgc"))?;
@@ -307,10 +356,14 @@ pub fn capture_with_wgc(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> 
     let result = run_capture_loop(
         ctx,
         logger,
-        &frame_pool,
-        &session,
-        &d3d_device,
-        &d3d_context,
+        &WgcResources {
+            frame_pool: &frame_pool,
+            session: &session,
+            winrt_device: &winrt_device,
+            d3d_device: &d3d_device,
+            d3d_context: &d3d_context,
+        },
+        size,
     );
 
     wgc_log(logger, "close session");

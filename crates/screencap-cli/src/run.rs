@@ -80,9 +80,13 @@ fn pre_parse_bootstrap(argv: &[String]) -> BootstrapOptions {
         if a == "--log-dir" && i + 1 < argc {
             i += 1;
             b.log_dir = argv[i].clone();
+        } else if let Some(value) = a.strip_prefix("--log-dir=") {
+            b.log_dir = value.to_string();
         } else if a == "--log-level" && i + 1 < argc {
             i += 1;
             b.log_level = screencap_core::logging::parse_log_level(&argv[i]);
+        } else if let Some(value) = a.strip_prefix("--log-level=") {
+            b.log_level = screencap_core::logging::parse_log_level(value);
         } else if a == "--json" {
             b.json = true;
         }
@@ -258,12 +262,15 @@ fn run_cap(parsed: &ParsedArgs, logger: Option<&Logger>, dpi_applied: &str) -> R
 
         let method = &parsed.cap.method;
 
-        if parsed.cap.target == TargetType::Window
-            || method.contains("window")
-            || method.contains("printwindow")
-            || method.contains("client")
-            || method.contains("windowdc")
-        {
+        let needs_window = method.contains("window") || method.contains("client");
+        if needs_window && parsed.cap.target != TargetType::Window {
+            return Err(ErrorInfo::new(
+                format!("method '{method}' requires --target window"),
+                "RunCap",
+            ));
+        }
+
+        if parsed.cap.target == TargetType::Window {
             let windows = enumerate_windows();
             let (w, reason) = resolve_window_target(&parsed.cap.window_query, &windows, logger)?;
             if let Some(lg) = logger {
@@ -383,6 +390,12 @@ fn run_cap(parsed: &ParsedArgs, logger: Option<&Logger>, dpi_applied: &str) -> R
         }
 
         let mut img = capture_result?;
+
+        if parsed.cap.force_alpha_255 {
+            for px in img.bgra.chunks_exact_mut(4) {
+                px[3] = 255;
+            }
+        }
 
         if let Some(lg) = logger {
             if parsed.cap.method.starts_with("dxgi-") {

@@ -6,7 +6,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Dwm::{
     DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
 };
-use windows::Win32::Graphics::Gdi::ClientToScreen;
+use windows::Win32::Graphics::Gdi::MapWindowPoints;
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetAncestor, GetClassNameW, GetClientRect, GetForegroundWindow, GetWindowRect,
     GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
@@ -16,14 +16,20 @@ use windows::Win32::UI::WindowsAndMessaging::{
 pub fn get_window_text_utf8(hwnd: HWND) -> String {
     let len = unsafe { GetWindowTextLengthW(hwnd) }.max(0) as usize;
     let mut ws: Vec<u16> = vec![0u16; len + 1];
-    if len > 0 {
-        unsafe { GetWindowTextW(hwnd, &mut ws) };
-    }
-    utf8_from_wide(&ws[..len])
+    // GetWindowTextLengthW's estimate can exceed what GetWindowTextW actually
+    // copies; slice by the real copied length so trailing NULs don't leak
+    // into the title.
+    let copied = if len > 0 {
+        unsafe { GetWindowTextW(hwnd, &mut ws) }.max(0) as usize
+    } else {
+        0
+    };
+    utf8_from_wide(&ws[..copied])
 }
 
 fn get_class_name_utf8(hwnd: HWND) -> String {
-    let mut buf = [0u16; 256];
+    // Class names can be up to 256 chars plus the NUL terminator.
+    let mut buf = [0u16; 257];
     let len = unsafe { GetClassNameW(hwnd, &mut buf) };
     let len = len.max(0) as usize;
     utf8_from_wide(&buf[..len])
@@ -34,23 +40,36 @@ fn get_client_rect_screen(hwnd: HWND) -> Rect {
     if unsafe { GetClientRect(hwnd, &mut cr) }.is_err() {
         return Rect::default();
     }
-    let mut p1 = POINT {
-        x: cr.left,
-        y: cr.top,
-    };
-    let mut p2 = POINT {
-        x: cr.right,
-        y: cr.bottom,
-    };
+    let mut points = [
+        POINT {
+            x: cr.left,
+            y: cr.top,
+        },
+        POINT {
+            x: cr.right,
+            y: cr.bottom,
+        },
+    ];
+    // ClientToScreen on individual corner points mirrors x for
+    // WS_EX_LAYOUTRTL windows, producing right < left. MapWindowPoints maps
+    // both points in one call without that mirroring; normalize afterwards
+    // in case the window is still RTL-mirrored.
     unsafe {
-        let _ = ClientToScreen(hwnd, &mut p1);
-        let _ = ClientToScreen(hwnd, &mut p2);
+        MapWindowPoints(Some(hwnd), None, &mut points);
+    }
+    let (mut left, mut right) = (points[0].x, points[1].x);
+    if left > right {
+        std::mem::swap(&mut left, &mut right);
+    }
+    let (mut top, mut bottom) = (points[0].y, points[1].y);
+    if top > bottom {
+        std::mem::swap(&mut top, &mut bottom);
     }
     Rect {
-        left: p1.x,
-        top: p1.y,
-        right: p2.x,
-        bottom: p2.y,
+        left,
+        top,
+        right,
+        bottom,
     }
 }
 

@@ -7,13 +7,24 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::UI::WindowsAndMessaging::MONITORINFOF_PRIMARY;
 
+/// Enumeration state threaded through `LPARAM`. `next_index` is advanced for
+/// every enumerated monitor, including ones where `GetMonitorInfoW` fails, so
+/// a transient failure leaves a gap in `index` instead of shifting every
+/// later monitor's index down by one.
+struct EnumState {
+    list: Vec<MonitorInfo>,
+    next_index: i32,
+}
+
 extern "system" fn enum_monitors_proc(
     hmon: HMONITOR,
     _hdc: HDC,
     _rect: *mut RECT,
     lparam: LPARAM,
 ) -> windows::core::BOOL {
-    let vec = unsafe { &mut *(lparam.0 as *mut Vec<MonitorInfo>) };
+    let state = unsafe { &mut *(lparam.0 as *mut EnumState) };
+    let index = state.next_index;
+    state.next_index += 1;
 
     let mut mi = MONITORINFOEXW::default();
     mi.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
@@ -30,27 +41,31 @@ extern "system" fn enum_monitors_proc(
 
     let info = MonitorInfo {
         hmon: hmon.0 as isize,
-        index: vec.len() as i32,
+        index,
         name: utf8_from_wide(&mi.szDevice[..name_len]),
         desktop: mi.monitorInfo.rcMonitor.into(),
         primary: (mi.monitorInfo.dwFlags & MONITORINFOF_PRIMARY) != 0,
     };
-    vec.push(info);
+    state.list.push(info);
     true.into()
 }
 
-/// EnumDisplayMonitors; index is enumeration order.
+/// EnumDisplayMonitors; index is enumeration order (including monitors
+/// skipped due to a failed `GetMonitorInfoW`, so indices stay stable).
 pub fn enumerate_monitors() -> Vec<MonitorInfo> {
-    let mut out: Vec<MonitorInfo> = Vec::new();
+    let mut state = EnumState {
+        list: Vec::new(),
+        next_index: 0,
+    };
     unsafe {
         let _ = EnumDisplayMonitors(
             None,
             None,
             Some(enum_monitors_proc),
-            LPARAM(&mut out as *mut Vec<MonitorInfo> as isize),
+            LPARAM(&mut state as *mut EnumState as isize),
         );
     }
-    out
+    state.list
 }
 
 fn parse_monitor_index(token: &str) -> Option<i32> {

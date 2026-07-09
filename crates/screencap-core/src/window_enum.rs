@@ -1,4 +1,4 @@
-use crate::logging::Logger;
+use crate::logging::{Logger, OptionLoggerExt};
 use crate::types::{ErrorInfo, LogLevel, Rect, TargetWindowQuery, WindowInfo};
 use crate::util::utf8_from_wide;
 
@@ -236,12 +236,10 @@ pub fn resolve_window_target(
         "matched by filters, selected by priority(visible&&!iconic&&!cloaked > root > max area)"
             .to_string();
 
-    if let Some(logger) = logger {
-        logger.log(
-            LogLevel::Info,
-            &format!("ResolveWindowTarget candidates={}", candidates.len()),
-        );
-    }
+    logger.log(
+        LogLevel::Info,
+        &format!("ResolveWindowTarget candidates={}", candidates.len()),
+    );
 
     Ok((winner, reason))
 }

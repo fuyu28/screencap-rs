@@ -23,7 +23,7 @@ use screencap_core::capture_wgc::capture_with_wgc;
 use screencap_core::crop::{crop_image_in_place, resolve_crop_rect_screen};
 use screencap_core::encode_png::save_png_wic;
 use screencap_core::image_stats::compute_image_stats;
-use screencap_core::logging::{get_build_stamp, get_os_version_string, Logger};
+use screencap_core::logging::{get_build_stamp, get_os_version_string, Logger, OptionLoggerExt};
 use screencap_core::monitor_enum::{enumerate_monitors, find_monitor_by_token};
 use screencap_core::types::*;
 use screencap_core::util::iso8601_now_local;
@@ -114,12 +114,10 @@ fn apply_dpi_mode(requested: DpiMode, logger: Option<&Logger>) -> String {
     if result.is_ok() {
         return "per-monitor-v2".to_string();
     }
-    if let Some(lg) = logger {
-        lg.log(
-            LogLevel::Warn,
-            "SetProcessDpiAwarenessContext(PMv2) failed, fallback to system",
-        );
-    }
+    logger.log(
+        LogLevel::Warn,
+        "SetProcessDpiAwarenessContext(PMv2) failed, fallback to system",
+    );
     set_system()
 }
 
@@ -270,26 +268,24 @@ fn resolve_capture_targets(
     if parsed.cap.target == TargetType::Window {
         let windows = enumerate_windows();
         let (w, reason) = resolve_window_target(&parsed.cap.window_query, &windows, logger)?;
-        if let Some(lg) = logger {
-            lg.log(
-                LogLevel::Info,
-                &format!(
-                    "resolved window hwnd={} pid={} title={} class={} rect={},{},{},{} visible={} iconic={} cloaked={} reason={}",
-                    w.hwnd as u64,
-                    w.pid,
-                    w.title,
-                    w.class_name,
-                    w.rect.left,
-                    w.rect.top,
-                    w.rect.right,
-                    w.rect.bottom,
-                    if w.visible { 1 } else { 0 },
-                    if w.iconic { 1 } else { 0 },
-                    if w.cloaked { 1 } else { 0 },
-                    reason,
-                ),
-            );
-        }
+        logger.log(
+            LogLevel::Info,
+            &format!(
+                "resolved window hwnd={} pid={} title={} class={} rect={},{},{},{} visible={} iconic={} cloaked={} reason={}",
+                w.hwnd as u64,
+                w.pid,
+                w.title,
+                w.class_name,
+                w.rect.left,
+                w.rect.top,
+                w.rect.right,
+                w.rect.bottom,
+                if w.visible { 1 } else { 0 },
+                if w.iconic { 1 } else { 0 },
+                if w.cloaked { 1 } else { 0 },
+                reason,
+            ),
+        );
         ctx.window = Some(w);
     }
 
@@ -321,8 +317,8 @@ fn resolve_capture_targets(
             }
         }
 
-        if let (Some(lg), Some(m)) = (logger, &ctx.monitor) {
-            lg.log(
+        if let Some(m) = &ctx.monitor {
+            logger.log(
                 LogLevel::Info,
                 &format!(
                     "resolved monitor index={} rect={},{},{},{} primary={}",
@@ -381,15 +377,13 @@ fn capture_with_retry(
                 break;
             }
             Err(e) => {
-                if let Some(lg) = logger {
-                    lg.log(
-                        LogLevel::Warn,
-                        &format!(
-                            "capture attempt failed attempt={} where={}",
-                            attempt, e.where_
-                        ),
-                    );
-                }
+                logger.log(
+                    LogLevel::Warn,
+                    &format!(
+                        "capture attempt failed attempt={} where={}",
+                        attempt, e.where_
+                    ),
+                );
                 capture_result = Err(e);
             }
         }
@@ -471,16 +465,14 @@ fn run_cap(parsed: &ParsedArgs, logger: Option<&Logger>, dpi_applied: &str) -> R
             }
         }
 
-        if let Some(lg) = logger {
-            if parsed.cap.method.starts_with("dxgi-") {
-                lg.log(
-                    LogLevel::Info,
-                    &format!(
-                        "DXGI adapter_index={} output_index={} frame_size={}x{} row_pitch={}",
-                        adapter_index, output_index, img.width, img.height, img.row_pitch
-                    ),
-                );
-            }
+        if parsed.cap.method.starts_with("dxgi-") {
+            logger.log(
+                LogLevel::Info,
+                &format!(
+                    "DXGI adapter_index={} output_index={} frame_size={}x{} row_pitch={}",
+                    adapter_index, output_index, img.width, img.height, img.row_pitch
+                ),
+            );
         }
 
         let img_rect = Rect {
@@ -505,15 +497,13 @@ fn run_cap(parsed: &ParsedArgs, logger: Option<&Logger>, dpi_applied: &str) -> R
         crop_image_in_place(crop_rect, &mut img)?;
 
         let stats = compute_image_stats(&img);
-        if let Some(lg) = logger {
-            lg.log(
-                LogLevel::Info,
-                &format!(
-                    "image_stats black_ratio={} transparent_ratio={}",
-                    stats.black_ratio, stats.transparent_ratio
-                ),
-            );
-        }
+        logger.log(
+            LogLevel::Info,
+            &format!(
+                "image_stats black_ratio={} transparent_ratio={}",
+                stats.black_ratio, stats.transparent_ratio
+            ),
+        );
 
         save_png_wic(&img, &parsed.cap.out_path, parsed.common.overwrite)?;
 
@@ -536,15 +526,13 @@ fn run_cap(parsed: &ParsedArgs, logger: Option<&Logger>, dpi_applied: &str) -> R
             stats,
         );
 
-        if let Some(lg) = logger {
-            lg.log(
-                LogLevel::Info,
-                &format!(
-                    "result=success out_path={} duration_ms={}",
-                    parsed.cap.out_path, duration_ms
-                ),
-            );
-        }
+        logger.log(
+            LogLevel::Info,
+            &format!(
+                "result=success out_path={} duration_ms={}",
+                parsed.cap.out_path, duration_ms
+            ),
+        );
 
         Ok(json)
     };
@@ -627,12 +615,10 @@ fn wait_for_hotkey(parsed: &ParsedArgs, logger: Option<&Logger>) -> Result<(), E
         ));
     }
 
-    if let Some(lg) = logger {
-        lg.log(
-            LogLevel::Info,
-            &format!("hotkey waiting spec={}", parsed.cap.hotkey_spec),
-        );
-    }
+    logger.log(
+        LogLevel::Info,
+        &format!("hotkey waiting spec={}", parsed.cap.hotkey_spec),
+    );
     if !parsed.common.json {
         println!("waiting hotkey: {}", parsed.cap.hotkey_spec);
     }

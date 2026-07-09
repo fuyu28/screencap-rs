@@ -29,7 +29,7 @@ use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemIntero
 use windows::Win32::System::WinRT::{RoInitialize, RO_INIT_MULTITHREADED};
 
 use crate::d3d11_copy::{copy_texture_to_image, create_d3d11_device};
-use crate::logging::Logger;
+use crate::logging::{Logger, OptionLoggerExt};
 use crate::types::{CaptureContext, ErrorInfo, ImageBuffer, LogLevel, Rect};
 
 const MAX_FRAMES: usize = 5;
@@ -42,12 +42,6 @@ fn to_err(e: windows::core::Error, where_: &str) -> ErrorInfo {
 
 fn to_err_with(message: &str, where_: &str, e: &windows::core::Error) -> ErrorInfo {
     ErrorInfo::with_hresult(message, where_, e.code().0 as u32)
-}
-
-fn wgc_log(logger: Option<&Logger>, msg: &str) {
-    if let Some(l) = logger {
-        l.log(LogLevel::Debug, &format!("wgc: {msg}"));
-    }
 }
 
 fn create_winrt_d3d_device(d3d_device: &ID3D11Device) -> Result<IDirect3DDevice, ErrorInfo> {
@@ -216,7 +210,7 @@ fn run_capture_loop(
     for _ in 0..MAX_FRAMES {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            wgc_log(logger, "timeout deadline reached");
+            logger.log(LogLevel::Debug, "wgc: timeout deadline reached");
             break;
         }
         match rx.recv_timeout(remaining) {
@@ -230,10 +224,10 @@ fn run_capture_loop(
                     if content_size.Width != pool_size.Width
                         || content_size.Height != pool_size.Height
                     {
-                        wgc_log(
-                            logger,
+                        logger.log(
+                            LogLevel::Debug,
                             &format!(
-                                "content size changed {}x{} -> {}x{}, recreating pool",
+                                "wgc: content size changed {}x{} -> {}x{}, recreating pool",
                                 pool_size.Width,
                                 pool_size.Height,
                                 content_size.Width,
@@ -255,9 +249,12 @@ fn run_capture_loop(
 
                 match copy_frame_to_image(&frame, res.d3d_device, res.d3d_context, origin) {
                     Ok(candidate) => {
-                        wgc_log(
-                            logger,
-                            &format!("candidate size={}x{}", candidate.width, candidate.height),
+                        logger.log(
+                            LogLevel::Debug,
+                            &format!(
+                                "wgc: candidate size={}x{}",
+                                candidate.width, candidate.height
+                            ),
                         );
                         let usable = is_probably_usable_frame(&candidate);
                         best = Some(candidate);
@@ -266,13 +263,16 @@ fn run_capture_loop(
                         }
                     }
                     Err(e) => {
-                        wgc_log(logger, &format!("copy frame failed: {}", e.message));
+                        logger.log(
+                            LogLevel::Debug,
+                            &format!("wgc: copy frame failed: {}", e.message),
+                        );
                         copy_err = Some(e);
                     }
                 }
             }
             Err(_) => {
-                wgc_log(logger, "wait did not produce frame");
+                logger.log(LogLevel::Debug, "wgc: wait did not produce frame");
             }
         }
     }

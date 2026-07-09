@@ -95,6 +95,20 @@ impl Logger {
     }
 }
 
+/// Lets callers holding `Option<&Logger>` call `.log(...)` directly instead
+/// of unwrapping the `Option` at every call site.
+pub trait OptionLoggerExt {
+    fn log(&self, level: LogLevel, msg: &str);
+}
+
+impl OptionLoggerExt for Option<&Logger> {
+    fn log(&self, level: LogLevel, msg: &str) {
+        if let Some(l) = self {
+            l.log(level, msg);
+        }
+    }
+}
+
 /// trace/debug/warn/error, anything else -> Info.
 pub fn parse_log_level(s: &str) -> LogLevel {
     match s {

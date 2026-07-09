@@ -194,7 +194,6 @@ fn run_capture_loop(
         .FrameArrived(&handler)
         .map_err(|e| to_err(e, "CaptureWithWgc"))?;
 
-    wgc_log(logger, "start capture");
     res.session
         .StartCapture()
         .map_err(|e| to_err(e, "CaptureWithWgc"))?;
@@ -222,8 +221,6 @@ fn run_capture_loop(
         }
         match rx.recv_timeout(remaining) {
             Ok(frame) => {
-                wgc_log(logger, "frame arrived");
-
                 // The window can grow between pool creation (at item.Size())
                 // and frame arrival; when that happens ContentSize outgrows
                 // the pool's texture size, and the frame must be dropped
@@ -280,7 +277,6 @@ fn run_capture_loop(
         }
     }
 
-    wgc_log(logger, "revoke frame handler");
     let _ = res.frame_pool.RemoveFrameArrived(token);
 
     match best {
@@ -294,13 +290,11 @@ fn run_capture_loop(
 pub fn capture_with_wgc(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> {
     let logger = ctx.logger;
 
-    wgc_log(logger, "init_apartment");
     // RoInitialize's HRESULT wrapper treats S_FALSE (already initialized on
     // this thread, e.g. by a prior capture attempt) as success; only a real
     // failure (such as a conflicting apartment type) is propagated.
     unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.map_err(|e| to_err(e, "CaptureWithWgc"))?;
 
-    wgc_log(logger, "check supported");
     let supported =
         GraphicsCaptureSession::IsSupported().map_err(|e| to_err(e, "CaptureWithWgc"))?;
     if !supported {
@@ -310,22 +304,18 @@ pub fn capture_with_wgc(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> 
         ));
     }
 
-    wgc_log(logger, "create d3d device");
     let (d3d_device, d3d_context) =
         create_d3d11_device(None, D3D_DRIVER_TYPE_HARDWARE, "CaptureWithWgc")?;
 
-    wgc_log(logger, "create winrt d3d device");
     let winrt_device = create_winrt_d3d_device(&d3d_device)?;
 
     let item =
         if ctx.cap.method == "wgc-window" || ctx.cap.method == "wgc-window2" {
-            wgc_log(logger, "create item for window");
             let window = ctx.window.as_ref().ok_or_else(|| {
                 ErrorInfo::new("wgc-window needs window target", "CaptureWithWgc")
             })?;
             create_capture_item_from_hwnd(HWND(window.hwnd as *mut core::ffi::c_void))?
         } else if ctx.cap.method == "wgc-monitor" || ctx.cap.method == "wgc-monitor2" {
-            wgc_log(logger, "create item for monitor");
             let monitor = ctx.monitor.as_ref().ok_or_else(|| {
                 ErrorInfo::new("wgc-monitor needs monitor target", "CaptureWithWgc")
             })?;
@@ -335,9 +325,7 @@ pub fn capture_with_wgc(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> 
         };
 
     let size = item.Size().map_err(|e| to_err(e, "CaptureWithWgc"))?;
-    wgc_log(logger, &format!("item size={}x{}", size.Width, size.Height));
 
-    wgc_log(logger, "create frame pool");
     let frame_pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
         &winrt_device,
         FRAME_POOL_PIXEL_FORMAT,
@@ -346,7 +334,6 @@ pub fn capture_with_wgc(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> 
     )
     .map_err(|e| to_err(e, "CaptureWithWgc"))?;
 
-    wgc_log(logger, "create session");
     let session = frame_pool
         .CreateCaptureSession(&item)
         .map_err(|e| to_err(e, "CaptureWithWgc"))?;
@@ -367,9 +354,7 @@ pub fn capture_with_wgc(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> 
         size,
     );
 
-    wgc_log(logger, "close session");
     let _ = session.Close();
-    wgc_log(logger, "close frame pool");
     let _ = frame_pool.Close();
 
     result

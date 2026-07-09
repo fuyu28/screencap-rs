@@ -53,7 +53,7 @@ struct CommonCliOptions {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    Cap(CapCli),
+    Cap(Box<CapCli>),
     List(ListCli),
 }
 

@@ -104,16 +104,11 @@ fn acquire_dup_frame(
     let mut desc = D3D11_TEXTURE2D_DESC::default();
     unsafe { tex.GetDesc(&mut desc) };
 
-    let w = capture_rect.width();
-    let h = capture_rect.height();
     let image = copy_texture_to_image(
         &device,
         &context,
         desc,
-        w,
-        h,
-        capture_rect.left,
-        capture_rect.top,
+        capture_rect,
         |staging| unsafe { context.CopyResource(staging, &tex) },
         "AcquireDupFrame",
     )?;

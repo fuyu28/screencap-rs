@@ -134,14 +134,18 @@ fn copy_frame_to_image(
         back: 1,
     };
 
+    let rect = Rect {
+        left: origin_rect.left,
+        top: origin_rect.top,
+        right: origin_rect.left + width as i32,
+        bottom: origin_rect.top + height as i32,
+    };
+
     copy_texture_to_image(
         device,
         context,
         desc,
-        width as i32,
-        height as i32,
-        origin_rect.left,
-        origin_rect.top,
+        rect,
         |staging| unsafe {
             context.CopySubresourceRegion(staging, 0, 0, 0, 0, &tex, 0, Some(&src_box));
         },

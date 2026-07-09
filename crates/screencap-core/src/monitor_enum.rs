@@ -1,4 +1,4 @@
-use crate::types::{MonitorInfo, Rect};
+use crate::types::MonitorInfo;
 use crate::util::utf8_from_wide;
 
 use windows::Win32::Foundation::{LPARAM, RECT};
@@ -6,15 +6,6 @@ use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
 };
 use windows::Win32::UI::WindowsAndMessaging::MONITORINFOF_PRIMARY;
-
-fn to_rect(r: RECT) -> Rect {
-    Rect {
-        left: r.left,
-        top: r.top,
-        right: r.right,
-        bottom: r.bottom,
-    }
-}
 
 extern "system" fn enum_monitors_proc(
     hmon: HMONITOR,
@@ -41,7 +32,7 @@ extern "system" fn enum_monitors_proc(
         hmon: hmon.0 as isize,
         index: vec.len() as i32,
         name: utf8_from_wide(&mi.szDevice[..name_len]),
-        desktop: to_rect(mi.monitorInfo.rcMonitor),
+        desktop: mi.monitorInfo.rcMonitor.into(),
         primary: (mi.monitorInfo.dwFlags & MONITORINFOF_PRIMARY) != 0,
     };
     vec.push(info);

@@ -13,16 +13,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GA_ROOT,
 };
 
-fn to_rect(r: RECT) -> Rect {
-    Rect {
-        left: r.left,
-        top: r.top,
-        right: r.right,
-        bottom: r.bottom,
-    }
-}
-
-fn get_window_text_utf8(hwnd: HWND) -> String {
+pub fn get_window_text_utf8(hwnd: HWND) -> String {
     let len = unsafe { GetWindowTextLengthW(hwnd) }.max(0) as usize;
     let mut ws: Vec<u16> = vec![0u16; len + 1];
     if len > 0 {
@@ -74,7 +65,7 @@ fn get_dwm_frame_rect(hwnd: HWND, fallback: Rect) -> Rect {
         )
     };
     if ok.is_ok() {
-        to_rect(r)
+        r.into()
     } else {
         fallback
     }
@@ -113,7 +104,7 @@ extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> windows::cor
     w.class_name = get_class_name_utf8(hwnd);
     let mut r = RECT::default();
     let _ = unsafe { GetWindowRect(hwnd, &mut r) };
-    w.rect = to_rect(r);
+    w.rect = r.into();
     w.client_rect_screen = get_client_rect_screen(hwnd);
     w.dwm_frame_rect = get_dwm_frame_rect(hwnd, w.rect);
     w.visible = unsafe { IsWindowVisible(hwnd) }.as_bool();

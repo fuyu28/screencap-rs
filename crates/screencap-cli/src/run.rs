@@ -246,278 +246,255 @@ fn run_cap(parsed: &ParsedArgs, logger: Option<&Logger>, dpi_applied: &str) -> R
     let mut rr = RunResult::default();
     let start = Instant::now();
 
-    let windows = enumerate_windows();
-    let monitors = enumerate_monitors();
-
-    let mut ctx = CaptureContext {
-        method: parsed.cap.method.clone(),
-        cap: parsed.cap.clone(),
-        common: parsed.common.clone(),
-        window: None,
-        monitor: None,
-        capture_rect_screen: Rect::default(),
-        logger,
-    };
-
-    let method = &parsed.cap.method;
-
-    if parsed.cap.target == TargetType::Window
-        || method.contains("window")
-        || method.contains("printwindow")
-        || method.contains("client")
-        || method.contains("windowdc")
-    {
-        match resolve_window_target(&parsed.cap.window_query, &windows, logger) {
-            Ok((w, reason)) => {
-                if let Some(lg) = logger {
-                    lg.log(
-                        LogLevel::Info,
-                        &format!(
-                            "resolved window hwnd={} pid={} title={} class={} rect={},{},{},{} visible={} iconic={} cloaked={} reason={}",
-                            w.hwnd as u64,
-                            w.pid,
-                            w.title,
-                            w.class_name,
-                            w.rect.left,
-                            w.rect.top,
-                            w.rect.right,
-                            w.rect.bottom,
-                            if w.visible { 1 } else { 0 },
-                            if w.iconic { 1 } else { 0 },
-                            if w.cloaked { 1 } else { 0 },
-                            reason,
-                        ),
-                    );
-                }
-                ctx.window = Some(w);
-            }
-            Err(err) => {
-                rr.err = err;
-                rr.exit_code = 1;
-                return rr;
-            }
-        }
-    }
-
-    if parsed.cap.target == TargetType::Screen
-        || method.contains("monitor")
-        || method == "dxgi-window"
-    {
-        if parsed.cap.screen_query.virtual_screen {
-            ctx.capture_rect_screen = virtual_screen_rect();
-        } else if let Some(token) = &parsed.cap.screen_query.monitor {
-            match find_monitor_by_token(&monitors, token) {
-                Some(mon) => {
-                    ctx.capture_rect_screen = mon.desktop;
-                    ctx.monitor = Some(mon);
-                }
-                None => {
-                    rr.err = ErrorInfo::new("monitor not found", "RunCap");
-                    rr.exit_code = 1;
-                    return rr;
-                }
-            }
-        } else if let Some(w) = &ctx.window {
-            let h = unsafe { MonitorFromWindow(HWND(w.hwnd as *mut _), MONITOR_DEFAULTTONEAREST) };
-            for m in &monitors {
-                if m.hmon == h.0 as isize {
-                    ctx.monitor = Some(m.clone());
-                    ctx.capture_rect_screen = m.desktop;
-                    break;
-                }
-            }
-        }
-
-        if let (Some(lg), Some(m)) = (logger, &ctx.monitor) {
-            lg.log(
-                LogLevel::Info,
-                &format!(
-                    "resolved monitor index={} rect={},{},{},{} primary={}",
-                    m.index,
-                    m.desktop.left,
-                    m.desktop.top,
-                    m.desktop.right,
-                    m.desktop.bottom,
-                    if m.primary { 1 } else { 0 },
-                ),
-            );
-        }
-    }
-
-    if !ctx.capture_rect_screen.is_valid() {
-        if let Some(w) = &ctx.window {
-            ctx.capture_rect_screen = w.rect;
-        }
-    }
-
-    let mut img: Option<ImageBuffer> = None;
-    let mut cap_err = ErrorInfo::default();
-    let mut adapter_index: i32 = -1;
-    let mut output_index: i32 = -1;
-    let mut cap_ok = false;
-
-    for attempt in 0..=parsed.common.retry {
-        let result: Result<ImageBuffer, ErrorInfo> = if parsed.cap.method.starts_with("gdi-") {
-            capture_with_gdi(&ctx)
-        } else if parsed.cap.method.starts_with("dxgi-") {
-            match capture_with_dxgi(&ctx) {
-                Ok((buf, a, o)) => {
-                    adapter_index = a;
-                    output_index = o;
-                    Ok(buf)
-                }
-                Err(e) => Err(e),
-            }
-        } else if parsed.cap.method.starts_with("wgc-") {
-            capture_with_wgc(&ctx)
-        } else {
-            Err(ErrorInfo::new("unknown method", "RunCap"))
+    let capture = || -> Result<String, ErrorInfo> {
+        let mut ctx = CaptureContext {
+            cap: parsed.cap.clone(),
+            common: parsed.common.clone(),
+            window: None,
+            monitor: None,
+            capture_rect_screen: Rect::default(),
+            logger,
         };
 
-        match result {
-            Ok(buf) => {
-                img = Some(buf);
-                cap_ok = true;
-                break;
+        let method = &parsed.cap.method;
+
+        if parsed.cap.target == TargetType::Window
+            || method.contains("window")
+            || method.contains("printwindow")
+            || method.contains("client")
+            || method.contains("windowdc")
+        {
+            let windows = enumerate_windows();
+            let (w, reason) = resolve_window_target(&parsed.cap.window_query, &windows, logger)?;
+            if let Some(lg) = logger {
+                lg.log(
+                    LogLevel::Info,
+                    &format!(
+                        "resolved window hwnd={} pid={} title={} class={} rect={},{},{},{} visible={} iconic={} cloaked={} reason={}",
+                        w.hwnd as u64,
+                        w.pid,
+                        w.title,
+                        w.class_name,
+                        w.rect.left,
+                        w.rect.top,
+                        w.rect.right,
+                        w.rect.bottom,
+                        if w.visible { 1 } else { 0 },
+                        if w.iconic { 1 } else { 0 },
+                        if w.cloaked { 1 } else { 0 },
+                        reason,
+                    ),
+                );
             }
-            Err(e) => {
-                cap_err = e;
-                if let Some(lg) = logger {
-                    lg.log(
-                        LogLevel::Warn,
-                        &format!(
-                            "capture attempt failed attempt={} where={}",
-                            attempt, cap_err.where_
-                        ),
-                    );
+            ctx.window = Some(w);
+        }
+
+        if parsed.cap.target == TargetType::Screen
+            || method.contains("monitor")
+            || method == "dxgi-window"
+        {
+            let monitors = enumerate_monitors();
+            if parsed.cap.screen_query.virtual_screen {
+                ctx.capture_rect_screen = virtual_screen_rect();
+            } else if let Some(token) = &parsed.cap.screen_query.monitor {
+                match find_monitor_by_token(&monitors, token) {
+                    Some(mon) => {
+                        ctx.capture_rect_screen = mon.desktop;
+                        ctx.monitor = Some(mon);
+                    }
+                    None => {
+                        return Err(ErrorInfo::new("monitor not found", "RunCap"));
+                    }
+                }
+            } else if let Some(w) = &ctx.window {
+                let h =
+                    unsafe { MonitorFromWindow(HWND(w.hwnd as *mut _), MONITOR_DEFAULTTONEAREST) };
+                for m in &monitors {
+                    if m.hmon == h.0 as isize {
+                        ctx.monitor = Some(m.clone());
+                        ctx.capture_rect_screen = m.desktop;
+                        break;
+                    }
+                }
+            }
+
+            if let (Some(lg), Some(m)) = (logger, &ctx.monitor) {
+                lg.log(
+                    LogLevel::Info,
+                    &format!(
+                        "resolved monitor index={} rect={},{},{},{} primary={}",
+                        m.index,
+                        m.desktop.left,
+                        m.desktop.top,
+                        m.desktop.right,
+                        m.desktop.bottom,
+                        if m.primary { 1 } else { 0 },
+                    ),
+                );
+            }
+        }
+
+        if !ctx.capture_rect_screen.is_valid() {
+            if let Some(w) = &ctx.window {
+                ctx.capture_rect_screen = w.rect;
+            }
+        }
+
+        let mut adapter_index: i32 = -1;
+        let mut output_index: i32 = -1;
+        let mut capture_result: Result<ImageBuffer, ErrorInfo> = Err(ErrorInfo::default());
+
+        for attempt in 0..=parsed.common.retry {
+            let result: Result<ImageBuffer, ErrorInfo> = if parsed.cap.method.starts_with("gdi-") {
+                capture_with_gdi(&ctx)
+            } else if parsed.cap.method.starts_with("dxgi-") {
+                match capture_with_dxgi(&ctx) {
+                    Ok((buf, a, o)) => {
+                        adapter_index = a;
+                        output_index = o;
+                        Ok(buf)
+                    }
+                    Err(e) => Err(e),
+                }
+            } else if parsed.cap.method.starts_with("wgc-") {
+                capture_with_wgc(&ctx)
+            } else {
+                Err(ErrorInfo::new("unknown method", "RunCap"))
+            };
+
+            match result {
+                Ok(buf) => {
+                    capture_result = Ok(buf);
+                    break;
+                }
+                Err(e) => {
+                    if let Some(lg) = logger {
+                        lg.log(
+                            LogLevel::Warn,
+                            &format!(
+                                "capture attempt failed attempt={} where={}",
+                                attempt, e.where_
+                            ),
+                        );
+                    }
+                    capture_result = Err(e);
                 }
             }
         }
-    }
 
-    if !cap_ok {
-        rr.err = cap_err;
-        rr.exit_code = 1;
-        return rr;
-    }
+        let mut img = capture_result?;
 
-    let mut img = img.expect("cap_ok implies img is set");
+        if let Some(lg) = logger {
+            if parsed.cap.method.starts_with("dxgi-") {
+                lg.log(
+                    LogLevel::Info,
+                    &format!(
+                        "DXGI adapter_index={} output_index={} frame_size={}x{} row_pitch={}",
+                        adapter_index, output_index, img.width, img.height, img.row_pitch
+                    ),
+                );
+            }
+        }
 
-    if let Some(lg) = logger {
-        if parsed.cap.method.starts_with("dxgi-") {
+        let img_rect = Rect {
+            left: img.origin_x,
+            top: img.origin_y,
+            right: img.origin_x + img.width,
+            bottom: img.origin_y + img.height,
+        };
+        let mut crop_mode = parsed.cap.crop_mode;
+        if crop_mode == CropMode::None && parsed.cap.method == "dxgi-window" {
+            crop_mode = CropMode::Window;
+        }
+
+        let crop_rect = resolve_crop_rect_screen(
+            crop_mode,
+            parsed.cap.crop_rect,
+            ctx.window.as_ref(),
+            img_rect,
+            parsed.cap.pad,
+        )?;
+
+        crop_image_in_place(crop_rect, &mut img)?;
+
+        let stats = compute_image_stats(&img);
+        if let Some(lg) = logger {
             lg.log(
                 LogLevel::Info,
                 &format!(
-                    "DXGI adapter_index={} output_index={} frame_size={}x{} row_pitch={}",
-                    adapter_index, output_index, img.width, img.height, img.row_pitch
+                    "image_stats black_ratio={} transparent_ratio={}",
+                    stats.black_ratio, stats.transparent_ratio
                 ),
             );
         }
-    }
 
-    let img_rect = Rect {
-        left: img.origin_x,
-        top: img.origin_y,
-        right: img.origin_x + img.width,
-        bottom: img.origin_y + img.height,
+        save_png_wic(&img, &parsed.cap.out_path, parsed.common.overwrite)?;
+
+        let duration_ms = start.elapsed().as_millis() as i32;
+
+        let crop_out = CropRect {
+            x: img.origin_x,
+            y: img.origin_y,
+            w: img.width,
+            h: img.height,
+        };
+
+        let mut js = Map::new();
+        js.insert("ok".to_string(), json!(true));
+        js.insert("command".to_string(), json!("cap"));
+        js.insert("method".to_string(), json!(&parsed.cap.method));
+        js.insert(
+            "target".to_string(),
+            json!(cli::target_type_name(parsed.cap.target)),
+        );
+        js.insert("out_path".to_string(), json!(&parsed.cap.out_path));
+        js.insert("format".to_string(), json!("png"));
+        js.insert("timestamp".to_string(), json!(iso8601_now_local()));
+        js.insert("duration_ms".to_string(), json!(duration_ms));
+        js.insert("dpi_mode".to_string(), json!(dpi_applied));
+
+        if let Some(w) = &ctx.window {
+            js.insert("window".to_string(), cap_window_json(w));
+        }
+
+        if let Some(m) = &ctx.monitor {
+            js.insert("monitor".to_string(), cap_monitor_json(m));
+        }
+
+        js.insert(
+            "crop".to_string(),
+            json!({
+                "mode": cli::crop_mode_name(crop_mode),
+                "rect": crop_out,
+                "pad": parsed.cap.pad,
+            }),
+        );
+        js.insert("image_stats".to_string(), json!(stats));
+        js.insert("error".to_string(), Value::Null);
+
+        if let Some(lg) = logger {
+            lg.log(
+                LogLevel::Info,
+                &format!(
+                    "result=success out_path={} duration_ms={}",
+                    parsed.cap.out_path, duration_ms
+                ),
+            );
+        }
+
+        Ok(Value::Object(js).to_string())
     };
-    let mut crop_mode = parsed.cap.crop_mode;
-    if crop_mode == CropMode::None && parsed.cap.method == "dxgi-window" {
-        crop_mode = CropMode::Window;
-    }
 
-    let crop_rect = match resolve_crop_rect_screen(
-        crop_mode,
-        parsed.cap.crop_rect,
-        ctx.window.as_ref(),
-        img_rect,
-        parsed.cap.pad,
-    ) {
-        Ok(r) => r,
+    match capture() {
+        Ok(json) => {
+            rr.ok = true;
+            rr.exit_code = 0;
+            rr.json = json;
+        }
         Err(e) => {
             rr.err = e;
             rr.exit_code = 1;
-            return rr;
         }
-    };
-
-    if let Err(e) = crop_image_in_place(crop_rect, &mut img) {
-        rr.err = e;
-        rr.exit_code = 1;
-        return rr;
-    }
-
-    let stats = compute_image_stats(&img);
-    if let Some(lg) = logger {
-        lg.log(
-            LogLevel::Info,
-            &format!(
-                "image_stats black_ratio={} transparent_ratio={}",
-                stats.black_ratio, stats.transparent_ratio
-            ),
-        );
-    }
-
-    if let Err(e) = save_png_wic(&img, &parsed.cap.out_path, parsed.common.overwrite) {
-        rr.err = e;
-        rr.exit_code = 1;
-        return rr;
-    }
-
-    let duration_ms = start.elapsed().as_millis() as i32;
-
-    let crop_out = CropRect {
-        x: img.origin_x,
-        y: img.origin_y,
-        w: img.width,
-        h: img.height,
-    };
-
-    let mut js = Map::new();
-    js.insert("ok".to_string(), json!(true));
-    js.insert("command".to_string(), json!("cap"));
-    js.insert("method".to_string(), json!(&parsed.cap.method));
-    js.insert(
-        "target".to_string(),
-        json!(cli::target_type_name(parsed.cap.target)),
-    );
-    js.insert("out_path".to_string(), json!(&parsed.cap.out_path));
-    js.insert("format".to_string(), json!("png"));
-    js.insert("timestamp".to_string(), json!(iso8601_now_local()));
-    js.insert("duration_ms".to_string(), json!(duration_ms));
-    js.insert("dpi_mode".to_string(), json!(dpi_applied));
-
-    if let Some(w) = &ctx.window {
-        js.insert("window".to_string(), cap_window_json(w));
-    }
-
-    if let Some(m) = &ctx.monitor {
-        js.insert("monitor".to_string(), cap_monitor_json(m));
-    }
-
-    js.insert(
-        "crop".to_string(),
-        json!({
-            "mode": cli::crop_mode_name(crop_mode),
-            "rect": crop_out,
-            "pad": parsed.cap.pad,
-        }),
-    );
-    js.insert("image_stats".to_string(), json!(stats));
-    js.insert("error".to_string(), Value::Null);
-
-    rr.ok = true;
-    rr.exit_code = 0;
-    rr.json = Value::Object(js).to_string();
-
-    if let Some(lg) = logger {
-        lg.log(
-            LogLevel::Info,
-            &format!(
-                "result=success out_path={} duration_ms={}",
-                parsed.cap.out_path, duration_ms
-            ),
-        );
     }
 
     rr

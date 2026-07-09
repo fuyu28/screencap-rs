@@ -14,11 +14,10 @@ use windows::Graphics::Capture::{
 };
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Graphics::DirectX::DirectXPixelFormat;
-use windows::Win32::Foundation::{HMODULE, HWND};
+use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_BOX,
-    D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
+    ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_BOX, D3D11_TEXTURE2D_DESC,
 };
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::Graphics::Gdi::HMONITOR;
@@ -28,7 +27,7 @@ use windows::Win32::System::WinRT::Direct3D11::{
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
 use windows::Win32::System::WinRT::{RoInitialize, RO_INIT_MULTITHREADED};
 
-use crate::d3d11_copy::copy_texture_to_image;
+use crate::d3d11_copy::{copy_texture_to_image, create_d3d11_device};
 use crate::logging::Logger;
 use crate::types::{CaptureContext, ErrorInfo, ImageBuffer, LogLevel, Rect};
 
@@ -195,7 +194,7 @@ fn run_capture_loop(
             Ok(frame) => {
                 wgc_log(logger, "frame arrived");
 
-                let origin = if ctx.method == "wgc-window" || ctx.method == "wgc-window2" {
+                let origin = if ctx.cap.method == "wgc-window" || ctx.cap.method == "wgc-window2" {
                     ctx.window
                         .as_ref()
                         .map_or(ctx.capture_rect_screen, |w| w.rect)
@@ -258,38 +257,20 @@ pub fn capture_with_wgc(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> 
     }
 
     wgc_log(logger, "create d3d device");
-    let mut d3d_device: Option<ID3D11Device> = None;
-    let mut d3d_context: Option<ID3D11DeviceContext> = None;
-    unsafe {
-        D3D11CreateDevice(
-            None,
-            D3D_DRIVER_TYPE_HARDWARE,
-            HMODULE::default(),
-            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-            None,
-            D3D11_SDK_VERSION,
-            Some(&mut d3d_device),
-            None,
-            Some(&mut d3d_context),
-        )
-    }
-    .map_err(|e| to_err(e, "CaptureWithWgc"))?;
-    let d3d_device = d3d_device
-        .ok_or_else(|| ErrorInfo::new("D3D11CreateDevice returned no device", "CaptureWithWgc"))?;
-    let d3d_context = d3d_context
-        .ok_or_else(|| ErrorInfo::new("D3D11CreateDevice returned no context", "CaptureWithWgc"))?;
+    let (d3d_device, d3d_context) =
+        create_d3d11_device(None, D3D_DRIVER_TYPE_HARDWARE, "CaptureWithWgc")?;
 
     wgc_log(logger, "create winrt d3d device");
     let winrt_device = create_winrt_d3d_device(&d3d_device)?;
 
     let item =
-        if ctx.method == "wgc-window" || ctx.method == "wgc-window2" {
+        if ctx.cap.method == "wgc-window" || ctx.cap.method == "wgc-window2" {
             wgc_log(logger, "create item for window");
             let window = ctx.window.as_ref().ok_or_else(|| {
                 ErrorInfo::new("wgc-window needs window target", "CaptureWithWgc")
             })?;
             create_capture_item_from_hwnd(HWND(window.hwnd as *mut core::ffi::c_void))?
-        } else if ctx.method == "wgc-monitor" || ctx.method == "wgc-monitor2" {
+        } else if ctx.cap.method == "wgc-monitor" || ctx.cap.method == "wgc-monitor2" {
             wgc_log(logger, "create item for monitor");
             let monitor = ctx.monitor.as_ref().ok_or_else(|| {
                 ErrorInfo::new("wgc-monitor needs monitor target", "CaptureWithWgc")

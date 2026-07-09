@@ -73,19 +73,17 @@ impl Logger {
         if level < state.min_level {
             return;
         }
-        if state.file.is_none() {
+        let Some(file) = state.file.as_mut() else {
             return;
-        }
+        };
         let line = format!(
             "[{}] [{}] {}\n",
             iso8601_now_local(),
             log_level_name(level),
             msg
         );
-        if let Some(file) = state.file.as_mut() {
-            let _ = file.write_all(line.as_bytes());
-            let _ = file.flush();
-        }
+        let _ = file.write_all(line.as_bytes());
+        let _ = file.flush();
     }
 
     pub fn file_path(&self) -> PathBuf {

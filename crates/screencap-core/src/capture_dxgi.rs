@@ -3,12 +3,9 @@
 //! the window's nearest monitor).
 
 use windows::core::Interface;
-use windows::Win32::Foundation::{HMODULE, HWND};
+use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
-use windows::Win32::Graphics::Direct3D11::{
-    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
-    D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
-};
+use windows::Win32::Graphics::Direct3D11::{ID3D11Texture2D, D3D11_TEXTURE2D_DESC};
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput1, IDXGIOutputDuplication,
     IDXGIResource, DXGI_OUTDUPL_FRAME_INFO,
@@ -17,11 +14,23 @@ use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromWindow, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
 
-use crate::d3d11_copy::copy_texture_to_image;
+use crate::d3d11_copy::{copy_texture_to_image, create_d3d11_device};
 use crate::types::{CaptureContext, ErrorInfo, ImageBuffer, Rect};
 
 fn hr_error(message: &str, where_: &str, e: &windows::core::Error) -> ErrorInfo {
     ErrorInfo::with_hresult(message, where_, e.code().0 as u32)
+}
+
+struct DupFrameGuard {
+    dup: IDXGIOutputDuplication,
+}
+
+impl Drop for DupFrameGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = self.dup.ReleaseFrame();
+        }
+    }
 }
 
 fn find_output_for_monitor(
@@ -75,24 +84,8 @@ fn acquire_dup_frame(
     timeout_ms: i32,
     capture_rect: Rect,
 ) -> Result<ImageBuffer, ErrorInfo> {
-    let mut device: Option<ID3D11Device> = None;
-    let mut context: Option<ID3D11DeviceContext> = None;
-    unsafe {
-        D3D11CreateDevice(
-            adapter,
-            D3D_DRIVER_TYPE_UNKNOWN,
-            HMODULE::default(),
-            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-            None,
-            D3D11_SDK_VERSION,
-            Some(&mut device),
-            None,
-            Some(&mut context),
-        )
-    }
-    .map_err(|e| hr_error("D3D11CreateDevice failed", "AcquireDupFrame", &e))?;
-    let device = device.expect("D3D11CreateDevice succeeded without a device");
-    let context = context.expect("D3D11CreateDevice succeeded without a context");
+    let (device, context) =
+        create_d3d11_device(Some(adapter), D3D_DRIVER_TYPE_UNKNOWN, "AcquireDupFrame")?;
 
     let dup: IDXGIOutputDuplication = unsafe { output1.DuplicateOutput(&device) }
         .map_err(|e| hr_error("DuplicateOutput failed", "AcquireDupFrame", &e))?;
@@ -101,26 +94,19 @@ fn acquire_dup_frame(
     let mut resource: Option<IDXGIResource> = None;
     unsafe { dup.AcquireNextFrame(timeout_ms as u32, &mut frame_info, &mut resource) }
         .map_err(|e| hr_error("AcquireNextFrame failed", "AcquireDupFrame", &e))?;
+    let _frame = DupFrameGuard { dup };
     let resource = resource.expect("AcquireNextFrame succeeded without a resource");
 
-    let tex: ID3D11Texture2D = match resource.cast() {
-        Ok(tex) => tex,
-        Err(e) => {
-            let _ = unsafe { dup.ReleaseFrame() };
-            return Err(hr_error(
-                "frame resource to texture failed",
-                "AcquireDupFrame",
-                &e,
-            ));
-        }
-    };
+    let tex: ID3D11Texture2D = resource
+        .cast()
+        .map_err(|e| hr_error("frame resource to texture failed", "AcquireDupFrame", &e))?;
 
     let mut desc = D3D11_TEXTURE2D_DESC::default();
     unsafe { tex.GetDesc(&mut desc) };
 
     let w = capture_rect.width();
     let h = capture_rect.height();
-    let image = match copy_texture_to_image(
+    let image = copy_texture_to_image(
         &device,
         &context,
         desc,
@@ -130,14 +116,7 @@ fn acquire_dup_frame(
         capture_rect.top,
         |staging| unsafe { context.CopyResource(staging, &tex) },
         "AcquireDupFrame",
-    ) {
-        Ok(image) => image,
-        Err(err) => {
-            let _ = unsafe { dup.ReleaseFrame() };
-            return Err(err);
-        }
-    };
-    let _ = unsafe { dup.ReleaseFrame() };
+    )?;
 
     Ok(image)
 }
@@ -171,12 +150,7 @@ pub fn capture_with_dxgi(ctx: &CaptureContext) -> Result<(ImageBuffer, i32, i32)
             unsafe { windows::Win32::Foundation::GetLastError() }.0,
         ));
     }
-    let monitor_rect = Rect {
-        left: mi.rcMonitor.left,
-        top: mi.rcMonitor.top,
-        right: mi.rcMonitor.right,
-        bottom: mi.rcMonitor.bottom,
-    };
+    let monitor_rect = Rect::from(mi.rcMonitor);
 
     let mut full = acquire_dup_frame(&output, &adapter, ctx.common.timeout_ms, monitor_rect)?;
 

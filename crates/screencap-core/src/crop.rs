@@ -20,35 +20,20 @@ pub fn resolve_crop_rect_screen(
     capture_screen_rect: Rect,
     pad: Pad,
 ) -> Result<Rect, ErrorInfo> {
+    let need_window = |what: &str| {
+        window.ok_or_else(|| {
+            ErrorInfo::new(
+                format!("crop {what} requested but no window target"),
+                "ResolveCropRectScreen",
+            )
+        })
+    };
+
     let mut base = match mode {
         CropMode::None => capture_screen_rect,
-        CropMode::Window => match window {
-            Some(w) => w.rect,
-            None => {
-                return Err(ErrorInfo::new(
-                    "crop window requested but no window target",
-                    "ResolveCropRectScreen",
-                ))
-            }
-        },
-        CropMode::Client => match window {
-            Some(w) => w.client_rect_screen,
-            None => {
-                return Err(ErrorInfo::new(
-                    "crop client requested but no window target",
-                    "ResolveCropRectScreen",
-                ))
-            }
-        },
-        CropMode::DwmFrame => match window {
-            Some(w) => w.dwm_frame_rect,
-            None => {
-                return Err(ErrorInfo::new(
-                    "crop dwm-frame requested but no window target",
-                    "ResolveCropRectScreen",
-                ))
-            }
-        },
+        CropMode::Window => need_window("window")?.rect,
+        CropMode::Client => need_window("client")?.client_rect_screen,
+        CropMode::DwmFrame => need_window("dwm-frame")?.dwm_frame_rect,
         CropMode::Manual => match manual {
             Some(m) => Rect {
                 left: m.x,
@@ -95,6 +80,10 @@ pub fn crop_image_in_place(crop_screen_rect: Rect, img: &mut ImageBuffer) -> Res
             "crop does not overlap image",
             "CropImageInPlace",
         ));
+    }
+
+    if c == img_rect && img.row_pitch == img.width * 4 {
+        return Ok(());
     }
 
     let x0 = (c.left - img.origin_x) as usize;

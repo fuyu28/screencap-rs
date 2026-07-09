@@ -11,7 +11,7 @@ use std::process::Command;
 use windows::core::{w, HSTRING, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{UpdateWindow, COLOR_WINDOW, HBRUSH};
-use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::Dialogs::{
     GetSaveFileNameW, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
 };
@@ -28,18 +28,18 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetAncestor, GetClientRect, GetMessageW,
-    GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, LoadCursorW, MessageBoxW, MoveWindow,
-    PostQuitMessage, RegisterClassW, SendMessageW, SetWindowLongPtrW, SetWindowTextW, ShowWindow,
-    TranslateMessage, CBS_DROPDOWNLIST, CB_ADDSTRING, CB_GETCURSEL, CB_GETLBTEXT, CB_SETCURSEL,
-    CREATESTRUCTW, CW_USEDEFAULT, ES_AUTOHSCROLL, GA_ROOT, GWLP_USERDATA, HMENU, IDC_ARROW,
-    MB_ICONERROR, MB_ICONINFORMATION, MSG, SW_SHOW, WINDOW_STYLE, WM_COMMAND, WM_CREATE,
+    GetWindowLongPtrW, LoadCursorW, MessageBoxW, MoveWindow, PostQuitMessage, RegisterClassW,
+    SendMessageW, SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage,
+    CBS_DROPDOWNLIST, CB_ADDSTRING, CB_GETCURSEL, CB_GETLBTEXT, CB_SETCURSEL, CREATESTRUCTW,
+    CW_USEDEFAULT, ES_AUTOHSCROLL, GA_ROOT, GWLP_USERDATA, HMENU, IDC_ARROW, MB_ICONERROR,
+    MB_ICONINFORMATION, MSG, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_COMMAND, WM_CREATE,
     WM_DESTROY, WM_NCCREATE, WM_NOTIFY, WM_SIZE, WNDCLASSW, WS_CHILD, WS_EX_CLIENTEDGE,
     WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 
 use screencap_core::types::WindowInfo;
 use screencap_core::util::{build_timestamp_for_filename, utf8_from_wide, wide_from_utf8};
-use screencap_core::window_enum::enumerate_windows;
+use screencap_core::window_enum::{enumerate_windows, get_window_text_utf8};
 
 const ID_LIST: u16 = 1001;
 const ID_REFRESH: u16 = 1002;
@@ -94,17 +94,6 @@ fn set_window_text(hwnd: HWND, text: &str) {
     unsafe {
         let _ = SetWindowTextW(hwnd, &HSTRING::from(text));
     }
-}
-
-fn get_window_text(hwnd: HWND) -> String {
-    let len = unsafe { GetWindowTextLengthW(hwnd) };
-    if len <= 0 {
-        return String::new();
-    }
-    let mut buf = vec![0u16; (len + 1) as usize];
-    let copied = unsafe { GetWindowTextW(hwnd, &mut buf) };
-    buf.truncate(copied.max(0) as usize);
-    utf8_from_wide(&buf)
 }
 
 fn set_status(state: &GuiState, text: &str) {
@@ -305,7 +294,7 @@ fn build_save_filter() -> Vec<u16> {
 }
 
 fn browse_output(state: &mut GuiState) {
-    let current = get_window_text(state.out);
+    let current = get_window_text_utf8(state.out);
     let mut file_buf = to_wide_fixed(&current, 260);
     let filter = build_save_filter();
 
@@ -382,10 +371,7 @@ fn selected_window_index(state: &GuiState) -> Option<usize> {
 }
 
 fn cli_exe_path() -> PathBuf {
-    let mut buf = vec![0u16; 32768];
-    let len = unsafe { GetModuleFileNameW(None, &mut buf) };
-    buf.truncate(len as usize);
-    let exe = PathBuf::from(utf8_from_wide(&buf));
+    let exe = std::env::current_exe().unwrap_or_default();
     exe.parent()
         .map(|p| p.join("screencap-cli.exe"))
         .unwrap_or_else(|| PathBuf::from("screencap-cli.exe"))
@@ -446,7 +432,7 @@ fn capture_selected(state: &mut GuiState) {
         }
     };
 
-    let out_path = get_window_text(state.out);
+    let out_path = get_window_text_utf8(state.out);
     if out_path.is_empty() {
         unsafe {
             MessageBoxW(
@@ -491,47 +477,59 @@ fn capture_selected(state: &mut GuiState) {
     }
 }
 
+fn create_child(
+    parent: HWND,
+    instance: HINSTANCE,
+    ex_style: WINDOW_EX_STYLE,
+    class: PCWSTR,
+    text: PCWSTR,
+    style: WINDOW_STYLE,
+    id: u16,
+) -> HWND {
+    unsafe {
+        CreateWindowExW(
+            ex_style,
+            class,
+            text,
+            style,
+            0,
+            0,
+            0,
+            0,
+            Some(parent),
+            Some(control_id(id)),
+            Some(instance),
+            None,
+        )
+    }
+    .unwrap_or_default()
+}
+
 fn create_controls(state: &mut GuiState, hwnd: HWND) {
     state.hwnd = hwnd;
     let instance = unsafe { GetModuleHandleW(PCWSTR::null()) }
         .map(|h| HINSTANCE(h.0))
         .unwrap_or_default();
 
-    state.refresh = unsafe {
-        CreateWindowExW(
-            Default::default(),
-            w!("BUTTON"),
-            w!("Refresh"),
-            WS_CHILD | WS_VISIBLE,
-            0,
-            0,
-            0,
-            0,
-            Some(hwnd),
-            Some(control_id(ID_REFRESH)),
-            Some(instance),
-            None,
-        )
-    }
-    .unwrap_or_default();
+    state.refresh = create_child(
+        hwnd,
+        instance,
+        Default::default(),
+        w!("BUTTON"),
+        w!("Refresh"),
+        WS_CHILD | WS_VISIBLE,
+        ID_REFRESH,
+    );
 
-    state.method = unsafe {
-        CreateWindowExW(
-            Default::default(),
-            w!("COMBOBOX"),
-            PCWSTR::null(),
-            WS_CHILD | WS_VISIBLE | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
-            0,
-            0,
-            0,
-            0,
-            Some(hwnd),
-            Some(control_id(ID_METHOD)),
-            Some(instance),
-            None,
-        )
-    }
-    .unwrap_or_default();
+    state.method = create_child(
+        hwnd,
+        instance,
+        Default::default(),
+        w!("COMBOBOX"),
+        PCWSTR::null(),
+        WS_CHILD | WS_VISIBLE | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
+        ID_METHOD,
+    );
 
     for m in METHODS {
         let wm = to_wide(m);
@@ -548,78 +546,46 @@ fn create_controls(state: &mut GuiState, hwnd: HWND) {
         SendMessageW(state.method, CB_SETCURSEL, Some(WPARAM(0)), Some(LPARAM(0)));
     }
 
-    state.out = unsafe {
-        CreateWindowExW(
-            WS_EX_CLIENTEDGE,
-            w!("EDIT"),
-            PCWSTR::null(),
-            WS_CHILD | WS_VISIBLE | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
-            0,
-            0,
-            0,
-            0,
-            Some(hwnd),
-            Some(control_id(ID_OUT)),
-            Some(instance),
-            None,
-        )
-    }
-    .unwrap_or_default();
+    state.out = create_child(
+        hwnd,
+        instance,
+        WS_EX_CLIENTEDGE,
+        w!("EDIT"),
+        PCWSTR::null(),
+        WS_CHILD | WS_VISIBLE | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
+        ID_OUT,
+    );
     set_window_text(state.out, &default_output_path());
 
-    state.browse = unsafe {
-        CreateWindowExW(
-            Default::default(),
-            w!("BUTTON"),
-            w!("Browse"),
-            WS_CHILD | WS_VISIBLE,
-            0,
-            0,
-            0,
-            0,
-            Some(hwnd),
-            Some(control_id(ID_BROWSE)),
-            Some(instance),
-            None,
-        )
-    }
-    .unwrap_or_default();
+    state.browse = create_child(
+        hwnd,
+        instance,
+        Default::default(),
+        w!("BUTTON"),
+        w!("Browse"),
+        WS_CHILD | WS_VISIBLE,
+        ID_BROWSE,
+    );
 
-    state.capture = unsafe {
-        CreateWindowExW(
-            Default::default(),
-            w!("BUTTON"),
-            w!("Capture"),
-            WS_CHILD | WS_VISIBLE,
-            0,
-            0,
-            0,
-            0,
-            Some(hwnd),
-            Some(control_id(ID_CAPTURE)),
-            Some(instance),
-            None,
-        )
-    }
-    .unwrap_or_default();
+    state.capture = create_child(
+        hwnd,
+        instance,
+        Default::default(),
+        w!("BUTTON"),
+        w!("Capture"),
+        WS_CHILD | WS_VISIBLE,
+        ID_CAPTURE,
+    );
 
-    state.list = unsafe {
-        CreateWindowExW(
-            WS_EX_CLIENTEDGE,
-            WC_LISTVIEWW,
-            PCWSTR::null(),
-            WS_CHILD | WS_VISIBLE | WINDOW_STYLE(LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS),
-            0,
-            0,
-            0,
-            0,
-            Some(hwnd),
-            Some(control_id(ID_LIST)),
-            Some(instance),
-            None,
-        )
-    }
-    .unwrap_or_default();
+    state.list = create_child(
+        hwnd,
+        instance,
+        WS_EX_CLIENTEDGE,
+        WC_LISTVIEWW,
+        PCWSTR::null(),
+        WS_CHILD | WS_VISIBLE | WINDOW_STYLE(LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS),
+        ID_LIST,
+    );
     unsafe {
         SendMessageW(
             state.list,
@@ -632,23 +598,15 @@ fn create_controls(state: &mut GuiState, hwnd: HWND) {
     }
     init_list_columns(state.list);
 
-    state.status = unsafe {
-        CreateWindowExW(
-            Default::default(),
-            w!("STATIC"),
-            PCWSTR::null(),
-            WS_CHILD | WS_VISIBLE,
-            0,
-            0,
-            0,
-            0,
-            Some(hwnd),
-            Some(control_id(ID_STATUS)),
-            Some(instance),
-            None,
-        )
-    }
-    .unwrap_or_default();
+    state.status = create_child(
+        hwnd,
+        instance,
+        Default::default(),
+        w!("STATIC"),
+        PCWSTR::null(),
+        WS_CHILD | WS_VISIBLE,
+        ID_STATUS,
+    );
 
     resize_controls(state);
     refresh_windows(state);

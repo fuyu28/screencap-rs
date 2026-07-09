@@ -238,7 +238,7 @@ fn capture_from_dc(
 }
 
 pub fn capture_with_gdi(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> {
-    match ctx.method.as_str() {
+    match ctx.cap.method.as_str() {
         "gdi-printwindow" => {
             let w = ctx.window.as_ref().ok_or_else(|| {
                 ErrorInfo::new("gdi-printwindow requires window target", "CaptureWithGdi")
@@ -277,7 +277,7 @@ pub fn capture_with_gdi(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> 
             let src = DeviceContext::client(hwnd)?;
             let ww = w.client_rect_screen.width();
             let hh = w.client_rect_screen.height();
-            let result = capture_from_dc(
+            capture_from_dc(
                 src.get(),
                 0,
                 0,
@@ -285,8 +285,7 @@ pub fn capture_with_gdi(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> 
                 hh,
                 w.client_rect_screen.left,
                 w.client_rect_screen.top,
-            );
-            result
+            )
         }
 
         "gdi-bitblt-windowdc" => {

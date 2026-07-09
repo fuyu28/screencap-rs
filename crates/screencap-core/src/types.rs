@@ -35,6 +35,17 @@ impl Rect {
     }
 }
 
+impl From<windows::Win32::Foundation::RECT> for Rect {
+    fn from(r: windows::Win32::Foundation::RECT) -> Self {
+        Self {
+            left: r.left,
+            top: r.top,
+            right: r.right,
+            bottom: r.bottom,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct CropRect {
     pub x: i32,
@@ -146,7 +157,6 @@ pub struct MonitorInfo {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CommandType {
-    Help,
     Cap,
     ListWindows,
     ListMonitors,
@@ -266,7 +276,6 @@ impl Default for CapOptions {
 }
 
 pub struct CaptureContext<'a> {
-    pub method: String,
     pub cap: CapOptions,
     pub common: CommonOptions,
     pub window: Option<WindowInfo>,

@@ -26,9 +26,15 @@ const INVALID_PATH_CHARS: [char; 6] = ['<', '>', '"', '|', '?', '*'];
 
 /// Validates a user-entered output path before it is handed to the capture
 /// backend, returning a human-readable reason on rejection. `/` and `\` are
-/// accepted (both are valid separators on Windows); this only guards against
-/// an empty path or characters the filesystem cannot store, so bad input
-/// surfaces as a clear message instead of an opaque write failure.
+/// accepted (both are valid separators on Windows); this guards against an
+/// empty path, characters the filesystem cannot store, or a path with no
+/// file-name component, so bad input surfaces as a clear message instead of an
+/// opaque write failure.
+///
+/// The path is validated as given (un-normalized): `Path::file_name` uses the
+/// target's separator rules, so on Windows both `/` and `\` are recognized and
+/// a bare root (`C:\`, `\`), a trailing separator, or a `..` ending all yield
+/// no file name.
 pub fn validate_output_path(path: &str) -> Result<(), String> {
     if path.trim().is_empty() {
         return Err("Output path is empty.".to_string());
@@ -40,6 +46,9 @@ pub fn validate_output_path(path: &str) -> Result<(), String> {
         if INVALID_PATH_CHARS.contains(&ch) {
             return Err(format!("Output path contains an invalid character: {ch}"));
         }
+    }
+    if std::path::Path::new(path).file_name().is_none() {
+        return Err(format!("Output path has no file name: {path}"));
     }
     Ok(())
 }
@@ -74,5 +83,16 @@ mod tests {
         }
         // Control characters are rejected too.
         assert!(validate_output_path("a\u{0007}b.png").is_err());
+    }
+
+    // `Path::file_name` uses the target's separator rules, so these bare-root
+    // and no-file-name cases only resolve to `None` on Windows.
+    #[cfg(windows)]
+    #[test]
+    fn paths_without_a_file_name_are_rejected() {
+        assert!(validate_output_path(r"C:\").is_err());
+        assert!(validate_output_path(r"\").is_err());
+        assert!(validate_output_path(r"C:\dir\").is_err());
+        assert!(validate_output_path(r"a\..").is_err());
     }
 }

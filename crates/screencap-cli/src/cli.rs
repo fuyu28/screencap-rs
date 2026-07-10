@@ -1,6 +1,7 @@
 use clap::error::ErrorKind;
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use screencap_core::types::*;
+use screencap_core::util::validate_output_path;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, VK_F1, VK_SNAPSHOT, VK_SPACE,
 };
@@ -304,6 +305,9 @@ impl CapCli {
         }
         if self.format != "png" {
             return Err(validation_error("only --format png is supported"));
+        }
+        if let Err(reason) = validate_output_path(&self.out_path) {
+            return Err(validation_error(reason));
         }
 
         let crop_rect = self.crop_rect.map(|values| CropRect {
@@ -710,6 +714,42 @@ mod tests {
         let parsed = parse_args(&argv).expect("virtual-screen should parse");
         assert_eq!(parsed.cap.target, TargetType::Screen);
         assert!(parsed.cap.screen_query.virtual_screen);
+    }
+
+    /// Minimal valid `cap` argv with a caller-chosen `--out` value.
+    fn window_cap_with_out(out: &str) -> Vec<String> {
+        args(&[
+            "screencap-cli",
+            "cap",
+            "--method",
+            "wgc-window",
+            "--foreground",
+            "--out",
+            out,
+        ])
+    }
+
+    #[test]
+    fn rejects_out_path_with_invalid_character() {
+        let err = parse_args(&window_cap_with_out("shot?.png"))
+            .expect_err("output path with an invalid character should fail");
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn accepts_normal_out_path() {
+        let parsed =
+            parse_args(&window_cap_with_out("C:/tmp/a.png")).expect("normal path should parse");
+        assert_eq!(parsed.cap.out_path, "C:/tmp/a.png");
+    }
+
+    // The no-file-name rejection relies on Windows `Path::file_name` semantics.
+    #[cfg(windows)]
+    #[test]
+    fn rejects_out_path_with_no_file_name() {
+        let err =
+            parse_args(&window_cap_with_out(r"C:\")).expect_err("root output path should fail");
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
     }
 
     #[test]

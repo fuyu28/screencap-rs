@@ -140,8 +140,9 @@ fn win_error(message: &str, e: WinError) -> ErrorInfo {
 }
 
 /// Refuses to overwrite an existing file unless `overwrite`
-/// ("output exists (use --overwrite)"). Handles COM init/uninit internally
-/// (tolerates RPC_E_CHANGED_MODE).
+/// ("output exists (use --overwrite)"), and rejects a directory target
+/// regardless of `overwrite` ("output path is a directory"). Handles COM
+/// init/uninit internally (tolerates RPC_E_CHANGED_MODE).
 pub fn save_png_wic(img: &ImageBuffer, out_path: &str, overwrite: bool) -> Result<(), ErrorInfo> {
     // `/` is a valid separator on Windows; normalize it so WIC's
     // InitializeFromFilename (shell-based) reliably accepts the path instead of
@@ -151,9 +152,19 @@ pub fn save_png_wic(img: &ImageBuffer, out_path: &str, overwrite: bool) -> Resul
     wide_path.push(0);
     let wide_path = PCWSTR::from_raw(wide_path.as_ptr());
 
-    if !overwrite {
-        let attrs = unsafe { GetFileAttributesW(wide_path) };
-        if attrs != INVALID_FILE_ATTRIBUTES {
+    // A directory target would fail opaquely in WIC, so report it clearly. This
+    // is checked before the overwrite guard: the directory-specific message is
+    // strictly more accurate than "output exists" and applies regardless of the
+    // overwrite flag.
+    let attrs = unsafe { GetFileAttributesW(wide_path) };
+    if attrs != INVALID_FILE_ATTRIBUTES {
+        if (attrs & FILE_ATTRIBUTE_DIRECTORY.0) != 0 {
+            return Err(ErrorInfo::new(
+                format!("output path is a directory: {normalized}"),
+                WHERE,
+            ));
+        }
+        if !overwrite {
             return Err(ErrorInfo::new("output exists (use --overwrite)", WHERE));
         }
     }
@@ -303,6 +314,22 @@ mod tests {
             err.message.contains("output directory does not exist"),
             "unexpected error: {err:?}"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn save_png_wic_rejects_existing_directory_target() {
+        // The system temp dir always exists and is a directory. It must be
+        // rejected with the directory-specific message for both overwrite modes.
+        let dir = std::env::temp_dir();
+        let dir_str = dir.to_string_lossy().into_owned();
+        for overwrite in [true, false] {
+            let err = save_png_wic(&tiny_image(), &dir_str, overwrite).unwrap_err();
+            assert!(
+                err.message.contains("output path is a directory"),
+                "overwrite={overwrite}: unexpected error: {err:?}"
+            );
+        }
     }
 
     #[cfg(windows)]

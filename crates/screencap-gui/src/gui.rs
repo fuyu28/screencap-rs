@@ -38,7 +38,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{HSTRING, PCWSTR, PWSTR, w};
 
 use screencap_core::encode_png::{normalize_path_separators, output_parent_dir, real_output_path};
-use screencap_core::types::WindowInfo;
+use screencap_core::types::{ImageFormat, WindowInfo};
 use screencap_core::util::{
     build_timestamp_for_filename, utf8_from_wide, validate_output_path, wide_from_utf8,
 };
@@ -61,10 +61,6 @@ const ID_FORMAT: u16 = 1008;
 const WM_APP_CAPTURE_DONE: u32 = WM_APP + 1;
 
 const METHODS: [&str; 2] = ["wgc-window", "wgc-window2"];
-
-/// Output formats offered in the format combobox; the string doubles as the
-/// `--format` value passed to screencap-cli and the output-file extension.
-const FORMATS: [&str; 2] = ["png", "jpg"];
 
 /// Per-window state. A pointer to this struct is stored in GWLP_USERDATA so the
 /// window procedure can recover its context.
@@ -119,7 +115,11 @@ fn set_status(state: &GuiState, text: &str) {
 }
 
 fn default_output_path() -> String {
-    let filename = format!("screenshot_{}.png", build_timestamp_for_filename());
+    let filename = format!(
+        "screenshot_{}.{}",
+        build_timestamp_for_filename(),
+        ImageFormat::default().extension()
+    );
     match std::env::current_dir() {
         Ok(cwd) => cwd.join(filename).to_string_lossy().into_owned(),
         Err(_) => filename,
@@ -309,11 +309,12 @@ fn refresh_windows(state: &mut GuiState) {
     set_status(state, &format!("Windows: {}", state.windows.len()));
 }
 
-/// Builds the Save-dialog filter for the selected format (`"png"` or `"jpg"`),
-/// keeping the All-files entry.
-fn build_save_filter(format: &str) -> Vec<u16> {
-    let image_entry = format!("{} image (*.{format})", format.to_uppercase());
-    let image_pattern = format!("*.{format}");
+/// Builds the Save-dialog filter for the selected format, keeping the
+/// All-files entry.
+fn build_save_filter(format: ImageFormat) -> Vec<u16> {
+    let ext = format.extension();
+    let image_entry = format!("{} image (*.{ext})", ext.to_uppercase());
+    let image_pattern = format!("*.{ext}");
     let mut buf = Vec::new();
     for part in [
         image_entry.as_str(),
@@ -333,7 +334,7 @@ fn browse_output(state: &mut GuiState) {
     let mut file_buf = to_wide_fixed(&current, 260);
     let format = selected_format(state);
     let filter = build_save_filter(format);
-    let def_ext = to_wide(format);
+    let def_ext = to_wide(format.extension());
 
     let mut ofn = OPENFILENAMEW {
         lStructSize: size_of::<OPENFILENAMEW>() as u32,
@@ -359,20 +360,20 @@ fn browse_output(state: &mut GuiState) {
     }
 }
 
-fn selected_method(state: &GuiState) -> &'static str {
-    let idx = unsafe { SendMessageW(state.method, CB_GETCURSEL, None, None) }.0 as i32;
-    if idx < 0 {
-        return METHODS[0];
-    }
-    METHODS.get(idx as usize).copied().unwrap_or(METHODS[0])
+/// Returns the item matching the combobox's current selection, falling back
+/// to the first item when nothing is selected (CB_GETCURSEL returns -1, which
+/// lands outside the slice after the usize cast).
+fn combo_selection<T: Copy>(combo: HWND, items: &[T]) -> T {
+    let idx = unsafe { SendMessageW(combo, CB_GETCURSEL, None, None) }.0 as usize;
+    items.get(idx).copied().unwrap_or(items[0])
 }
 
-fn selected_format(state: &GuiState) -> &'static str {
-    let idx = unsafe { SendMessageW(state.format, CB_GETCURSEL, None, None) }.0 as i32;
-    if idx < 0 {
-        return FORMATS[0];
-    }
-    FORMATS.get(idx as usize).copied().unwrap_or(FORMATS[0])
+fn selected_method(state: &GuiState) -> &'static str {
+    combo_selection(state.method, &METHODS)
+}
+
+fn selected_format(state: &GuiState) -> ImageFormat {
+    combo_selection(state.format, &ImageFormat::ALL)
 }
 
 /// Rewrites the output-path extension to match the selected format so the
@@ -383,7 +384,7 @@ fn sync_output_extension(state: &GuiState) {
         return;
     }
     let mut path = PathBuf::from(&current);
-    path.set_extension(selected_format(state));
+    path.set_extension(selected_format(state).extension());
     set_window_text(state.out, &path.to_string_lossy());
 }
 
@@ -433,7 +434,7 @@ fn run_capture_process(
     window: &WindowInfo,
     method: &str,
     out_path: &str,
-    format: &str,
+    format: ImageFormat,
 ) -> Result<(), String> {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -460,9 +461,10 @@ fn run_capture_process(
         .arg("--force-alpha")
         .arg("255");
 
-    // Omit --format for PNG (the CLI default) to keep the command line minimal.
-    if format != "png" {
-        command.arg("--format").arg(format);
+    // Omit --format for the CLI-default format to keep the command line
+    // minimal.
+    if format != ImageFormat::default() {
+        command.arg("--format").arg(format.as_str());
     }
 
     let status = command.creation_flags(CREATE_NO_WINDOW).status();
@@ -649,6 +651,35 @@ fn create_child(
     .unwrap_or_default()
 }
 
+/// Creates a drop-down list child, fills it with `items`, and selects the
+/// first entry.
+fn create_combo(parent: HWND, instance: HINSTANCE, id: u16, items: &[&str]) -> HWND {
+    let combo = create_child(
+        parent,
+        instance,
+        Default::default(),
+        w!("COMBOBOX"),
+        PCWSTR::null(),
+        WS_CHILD | WS_VISIBLE | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
+        id,
+    );
+    for item in items {
+        let wide = to_wide(item);
+        unsafe {
+            SendMessageW(
+                combo,
+                CB_ADDSTRING,
+                Some(WPARAM(0)),
+                Some(LPARAM(wide.as_ptr() as isize)),
+            );
+        }
+    }
+    unsafe {
+        SendMessageW(combo, CB_SETCURSEL, Some(WPARAM(0)), Some(LPARAM(0)));
+    }
+    combo
+}
+
 fn create_controls(state: &mut GuiState, hwnd: HWND) {
     state.hwnd = hwnd;
     let instance = unsafe { GetModuleHandleW(PCWSTR::null()) }
@@ -665,55 +696,13 @@ fn create_controls(state: &mut GuiState, hwnd: HWND) {
         ID_REFRESH,
     );
 
-    state.method = create_child(
+    state.method = create_combo(hwnd, instance, ID_METHOD, &METHODS);
+    state.format = create_combo(
         hwnd,
         instance,
-        Default::default(),
-        w!("COMBOBOX"),
-        PCWSTR::null(),
-        WS_CHILD | WS_VISIBLE | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
-        ID_METHOD,
-    );
-
-    for m in METHODS {
-        let wm = to_wide(m);
-        unsafe {
-            SendMessageW(
-                state.method,
-                CB_ADDSTRING,
-                Some(WPARAM(0)),
-                Some(LPARAM(wm.as_ptr() as isize)),
-            );
-        }
-    }
-    unsafe {
-        SendMessageW(state.method, CB_SETCURSEL, Some(WPARAM(0)), Some(LPARAM(0)));
-    }
-
-    state.format = create_child(
-        hwnd,
-        instance,
-        Default::default(),
-        w!("COMBOBOX"),
-        PCWSTR::null(),
-        WS_CHILD | WS_VISIBLE | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
         ID_FORMAT,
+        &ImageFormat::ALL.map(|f| f.as_str()),
     );
-
-    for f in FORMATS {
-        let wf = to_wide(f);
-        unsafe {
-            SendMessageW(
-                state.format,
-                CB_ADDSTRING,
-                Some(WPARAM(0)),
-                Some(LPARAM(wf.as_ptr() as isize)),
-            );
-        }
-    }
-    unsafe {
-        SendMessageW(state.format, CB_SETCURSEL, Some(WPARAM(0)), Some(LPARAM(0)));
-    }
 
     state.out = create_child(
         hwnd,

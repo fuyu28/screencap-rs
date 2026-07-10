@@ -184,18 +184,42 @@ pub enum CropMode {
     Manual,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ImageFormat {
+    #[default]
     Png,
     Jpg,
 }
 
 impl ImageFormat {
-    /// Lowercase name used in JSON output and log lines.
+    /// Every supported format, in the order UIs should offer them.
+    pub const ALL: [ImageFormat; 2] = [ImageFormat::Png, ImageFormat::Jpg];
+
+    /// Default JPEG quality applied when `--quality` is omitted.
+    pub const DEFAULT_JPEG_QUALITY: u8 = 90;
+
+    /// Lowercase name used as the `--format` value and in JSON output and
+    /// log lines.
     pub fn as_str(self) -> &'static str {
         match self {
             ImageFormat::Png => "png",
             ImageFormat::Jpg => "jpg",
+        }
+    }
+
+    /// File extension for output paths. Coincides with [`Self::as_str`]
+    /// today, but names a distinct concept (a future format may spell its
+    /// CLI value and extension differently).
+    pub fn extension(self) -> &'static str {
+        self.as_str()
+    }
+
+    /// Parses a CLI `--format` value, accepting the `jpeg` alias.
+    pub fn from_cli(value: &str) -> Option<ImageFormat> {
+        match value {
+            "png" => Some(ImageFormat::Png),
+            "jpg" | "jpeg" => Some(ImageFormat::Jpg),
+            _ => None,
         }
     }
 }
@@ -286,8 +310,8 @@ impl Default for CapOptions {
             crop_rect: None,
             pad: Pad::default(),
             force_alpha_255: false,
-            format: ImageFormat::Png,
-            quality: 90,
+            format: ImageFormat::default(),
+            quality: ImageFormat::DEFAULT_JPEG_QUALITY,
         }
     }
 }

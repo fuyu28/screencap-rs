@@ -167,12 +167,6 @@ fn set_jpeg_quality(props: &IPropertyBag2, quality: u8) -> Result<(), ErrorInfo>
         .map_err(|e| win_error("set JPEG ImageQuality failed", e))
 }
 
-/// PNG wrapper over [`save_image_wic`]; preserved so existing callers and the
-/// public surface stay unchanged.
-pub fn save_png_wic(img: &ImageBuffer, out_path: &str, overwrite: bool) -> Result<(), ErrorInfo> {
-    save_image_wic(img, out_path, overwrite, ImageFormat::Png, 0)
-}
-
 /// Refuses to overwrite an existing file unless `overwrite`
 /// ("output exists (use --overwrite)"), and rejects a directory target
 /// regardless of `overwrite` ("output path is a directory"). Handles COM
@@ -406,9 +400,16 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn save_png_wic_reports_missing_output_directory() {
+    fn save_image_wic_reports_missing_output_directory() {
         let img = tiny_image();
-        let err = save_png_wic(&img, "definitely-missing-dir-xyz/out.png", true).unwrap_err();
+        let err = save_image_wic(
+            &img,
+            "definitely-missing-dir-xyz/out.png",
+            true,
+            ImageFormat::Png,
+            0,
+        )
+        .unwrap_err();
         assert!(
             err.message.contains("output directory does not exist"),
             "unexpected error: {err:?}"
@@ -417,13 +418,14 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn save_png_wic_rejects_existing_directory_target() {
+    fn save_image_wic_rejects_existing_directory_target() {
         // The system temp dir always exists and is a directory. It must be
         // rejected with the directory-specific message for both overwrite modes.
         let dir = std::env::temp_dir();
         let dir_str = dir.to_string_lossy().into_owned();
         for overwrite in [true, false] {
-            let err = save_png_wic(&tiny_image(), &dir_str, overwrite).unwrap_err();
+            let err = save_image_wic(&tiny_image(), &dir_str, overwrite, ImageFormat::Png, 0)
+                .unwrap_err();
             assert!(
                 err.message.contains("output path is a directory"),
                 "overwrite={overwrite}: unexpected error: {err:?}"
@@ -433,12 +435,13 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn save_png_wic_writes_file_to_existing_directory() {
+    fn save_image_wic_writes_file_to_existing_directory() {
         let mut path = std::env::temp_dir();
         path.push(format!("screencap_savepng_{}.png", std::process::id()));
         let path_str = path.to_string_lossy().into_owned();
 
-        save_png_wic(&tiny_image(), &path_str, true).expect("save should succeed");
+        save_image_wic(&tiny_image(), &path_str, true, ImageFormat::Png, 0)
+            .expect("save should succeed");
         assert!(path.exists(), "expected {path:?} to exist");
 
         let _ = std::fs::remove_file(&path);

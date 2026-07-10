@@ -306,15 +306,12 @@ impl CapCli {
                 "--stdout is not supported in this version",
             ));
         }
-        let format = match self.format.as_str() {
-            "png" => ImageFormat::Png,
-            "jpg" | "jpeg" => ImageFormat::Jpg,
-            other => {
-                return Err(validation_error(format!(
-                    "unknown --format '{other}' (supported: png, jpg)"
-                )));
-            }
-        };
+        let format = ImageFormat::from_cli(&self.format).ok_or_else(|| {
+            validation_error(format!(
+                "unknown --format '{}' (supported: png, jpg)",
+                self.format
+            ))
+        })?;
         // `--quality` is a JPEG-only knob; clap already constrained it to 1-100.
         let quality = match (format, self.quality) {
             (ImageFormat::Png, Some(_)) => {
@@ -323,7 +320,7 @@ impl CapCli {
                 ));
             }
             (ImageFormat::Jpg, Some(q)) => q,
-            (_, None) => 90,
+            (_, None) => ImageFormat::DEFAULT_JPEG_QUALITY,
         };
         if let Err(reason) = validate_output_path(&self.out_path) {
             return Err(validation_error(reason));

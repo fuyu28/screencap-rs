@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and attach assets to (e.g. v0.1.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - name: Build
+        run: cargo build --release -p screencap-cli -p screencap-gui
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $zip = "screencap-rs-$env:TAG-windows-x86_64.zip"
+          Compress-Archive -Path target/release/screencap-cli.exe, target/release/screencap.exe -DestinationPath $zip
+          echo "ZIP=$zip" >> $env:GITHUB_ENV
+
+      - name: Upload to release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$env:TAG" *> $null || gh release create "$env:TAG" --title "$env:TAG" --generate-notes
+          gh release upload "$env:TAG" "$env:ZIP" --clobber

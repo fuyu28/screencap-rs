@@ -31,7 +31,8 @@ jobs:
         shell: pwsh
         run: |
           $zip = "screencap-rs-$env:TAG-windows-x86_64.zip"
-          Compress-Archive -Path target/release/screencap-cli.exe, target/release/screencap.exe -DestinationPath $zip
+          $bin = "target/x86_64-pc-windows-msvc/release"
+          Compress-Archive -Path "$bin/screencap-cli.exe", "$bin/screencap.exe" -DestinationPath $zip
           echo "ZIP=$zip" >> $env:GITHUB_ENV
 
       - name: Upload to release

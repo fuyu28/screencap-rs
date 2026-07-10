@@ -33,8 +33,8 @@ const INVALID_PATH_CHARS: [char; 6] = ['<', '>', '"', '|', '?', '*'];
 ///
 /// The path is validated as given (un-normalized): `Path::file_name` uses the
 /// target's separator rules, so on Windows both `/` and `\` are recognized and
-/// a bare root (`C:\`, `\`), a trailing separator, or a `..` ending all yield
-/// no file name.
+/// a bare root (`C:\`, `\`), a trailing separator, or a `..` ending are all
+/// rejected as having no file name.
 pub fn validate_output_path(path: &str) -> Result<(), String> {
     if path.trim().is_empty() {
         return Err("Output path is empty.".to_string());
@@ -47,7 +47,13 @@ pub fn validate_output_path(path: &str) -> Result<(), String> {
             return Err(format!("Output path contains an invalid character: {ch}"));
         }
     }
-    if std::path::Path::new(path).file_name().is_none() {
+    // `Path::file_name` ignores trailing separators (`C:\dir\` yields `dir`),
+    // so check those explicitly: a path ending in a separator names a
+    // directory, not a file.
+    if path.ends_with('/')
+        || path.ends_with('\\')
+        || std::path::Path::new(path).file_name().is_none()
+    {
         return Err(format!("Output path has no file name: {path}"));
     }
     Ok(())

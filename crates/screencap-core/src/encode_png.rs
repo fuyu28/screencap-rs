@@ -8,8 +8,8 @@ use windows::Win32::Graphics::Imaging::{
 };
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, DeleteFileW, GetFileAttributesW, GetFinalPathNameByHandleW,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_NAME_NORMALIZED, FILE_SHARE_DELETE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, INVALID_FILE_ATTRIBUTES, OPEN_EXISTING,
+    FILE_ATTRIBUTE_DIRECTORY, FILE_FLAG_BACKUP_SEMANTICS, FILE_NAME_NORMALIZED, FILE_SHARE_DELETE,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, INVALID_FILE_ATTRIBUTES, OPEN_EXISTING,
 };
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
@@ -113,6 +113,21 @@ pub fn real_output_path(requested: &str) -> String {
     fallback()
 }
 
+/// Returns the parent directory that must already exist for `normalized` (an
+/// already-separator-normalized path) to be writable, or `None` when the path
+/// is a bare filename saved to the current directory (nothing to check).
+/// `Path::parent` yields `Some("")` for such filenames, which is treated the
+/// same as no parent.
+fn output_parent_dir(normalized: &str) -> Option<&str> {
+    match std::path::Path::new(normalized)
+        .parent()
+        .and_then(|p| p.to_str())
+    {
+        Some("") | None => None,
+        Some(parent) => Some(parent),
+    }
+}
+
 fn hr_error(message: &str, hr: HRESULT) -> ErrorInfo {
     ErrorInfo::with_hresult(message, WHERE, hr.0 as u32)
 }
@@ -137,6 +152,21 @@ pub fn save_png_wic(img: &ImageBuffer, out_path: &str, overwrite: bool) -> Resul
         let attrs = unsafe { GetFileAttributesW(wide_path) };
         if attrs != INVALID_FILE_ATTRIBUTES {
             return Err(ErrorInfo::new("output exists (use --overwrite)", WHERE));
+        }
+    }
+
+    // WIC's InitializeFromFilename fails opaquely (ERROR_PATH_NOT_FOUND) when
+    // the parent directory is missing; check it up front and report a clear,
+    // specific error rather than creating the directory ourselves.
+    if let Some(parent) = output_parent_dir(&normalized) {
+        let mut wide_parent = wide_from_utf8(parent);
+        wide_parent.push(0);
+        let attrs = unsafe { GetFileAttributesW(PCWSTR::from_raw(wide_parent.as_ptr())) };
+        if attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY.0) == 0 {
+            return Err(ErrorInfo::new(
+                format!("output directory does not exist: {parent}"),
+                WHERE,
+            ));
         }
     }
 
@@ -232,6 +262,57 @@ mod tests {
         assert_eq!(normalize_path_separators(r"C:\dir\x.png"), r"C:\dir\x.png");
         assert_eq!(normalize_path_separators("plain.png"), "plain.png");
         assert_eq!(normalize_path_separators(""), "");
+    }
+
+    #[test]
+    fn output_parent_dir_skips_bare_filenames() {
+        assert_eq!(output_parent_dir("plain.png"), None);
+        assert_eq!(output_parent_dir(""), None);
+    }
+
+    #[test]
+    fn output_parent_dir_returns_directory_component() {
+        assert_eq!(output_parent_dir(r"a\b.png"), Some("a"));
+        assert_eq!(output_parent_dir(r"C:\dir\x.png"), Some(r"C:\dir"));
+    }
+
+    /// Minimal opaque BGRA buffer for exercising the WIC save path.
+    #[cfg(windows)]
+    fn tiny_image() -> ImageBuffer {
+        let width = 2;
+        let height = 2;
+        ImageBuffer {
+            width,
+            height,
+            row_pitch: width * 4,
+            origin_x: 0,
+            origin_y: 0,
+            bgra: vec![255u8; (width * height * 4) as usize],
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn save_png_wic_reports_missing_output_directory() {
+        let img = tiny_image();
+        let err = save_png_wic(&img, "definitely-missing-dir-xyz/out.png", true).unwrap_err();
+        assert!(
+            err.message.contains("output directory does not exist"),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn save_png_wic_writes_file_to_existing_directory() {
+        let mut path = std::env::temp_dir();
+        path.push(format!("screencap_savepng_{}.png", std::process::id()));
+        let path_str = path.to_string_lossy().into_owned();
+
+        save_png_wic(&tiny_image(), &path_str, true).expect("save should succeed");
+        assert!(path.exists(), "expected {path:?} to exist");
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

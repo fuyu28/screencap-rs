@@ -1,19 +1,19 @@
 //! PNG encoding through WIC, 32bpp BGRA.
 
-use windows::core::{Error as WinError, HRESULT, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, GENERIC_WRITE, HANDLE, RPC_E_CHANGED_MODE};
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_ContainerFormatPng, GUID_WICPixelFormat32bppBGRA,
     IWICImagingFactory, WICBitmapEncoderNoCache,
 };
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, DeleteFileW, GetFileAttributesW, GetFinalPathNameByHandleW,
-    FILE_ATTRIBUTE_DIRECTORY, FILE_FLAG_BACKUP_SEMANTICS, FILE_NAME_NORMALIZED, FILE_SHARE_DELETE,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, INVALID_FILE_ATTRIBUTES, OPEN_EXISTING,
+    CreateFileW, DeleteFileW, FILE_ATTRIBUTE_DIRECTORY, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_NAME_NORMALIZED, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileAttributesW,
+    GetFinalPathNameByHandleW, INVALID_FILE_ATTRIBUTES, OPEN_EXISTING,
 };
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
 };
+use windows::core::{Error as WinError, HRESULT, PCWSTR};
 
 use crate::types::{ErrorInfo, ImageBuffer};
 use crate::util::wide_from_utf8;

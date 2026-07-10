@@ -8,34 +8,34 @@ use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 
-use windows::core::{w, HSTRING, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::{UpdateWindow, COLOR_WINDOW, HBRUSH};
+use windows::Win32::Graphics::Gdi::{COLOR_WINDOW, HBRUSH, UpdateWindow};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::Dialogs::{
     GetSaveFileNameW, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
 };
 use windows::Win32::UI::Controls::{
-    InitCommonControlsEx, ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX, LVCF_TEXT, LVCF_WIDTH,
+    ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx, LVCF_TEXT, LVCF_WIDTH,
     LVCOLUMNW, LVIF_PARAM, LVIF_TEXT, LVITEMW, LVM_DELETEALLITEMS, LVM_GETITEMW, LVM_GETNEXTITEM,
     LVM_INSERTCOLUMNW, LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMTEXTW,
     LVNI_SELECTED, LVS_EX_DOUBLEBUFFER, LVS_EX_FULLROWSELECT, LVS_EX_GRIDLINES, LVS_REPORT,
-    LVS_SHOWSELALWAYS, LVS_SINGLESEL, NMHDR, NM_DBLCLK, WC_LISTVIEWW,
+    LVS_SHOWSELALWAYS, LVS_SINGLESEL, NM_DBLCLK, NMHDR, WC_LISTVIEWW,
 };
 use windows::Win32::UI::HiDpi::{
-    SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetAncestor, GetClientRect, GetMessageW,
-    GetWindowLongPtrW, LoadCursorW, MessageBoxW, MoveWindow, PostMessageW, PostQuitMessage,
-    RegisterClassW, SendMessageW, SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage,
-    CBS_DROPDOWNLIST, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, CREATESTRUCTW, CW_USEDEFAULT,
-    ES_AUTOHSCROLL, GA_ROOT, GWLP_USERDATA, HMENU, IDC_ARROW, MB_ICONERROR, MB_ICONINFORMATION,
-    MSG, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_COMMAND, WM_CREATE, WM_DESTROY,
+    CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, CBS_DROPDOWNLIST, CREATESTRUCTW, CW_USEDEFAULT,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, ES_AUTOHSCROLL, GA_ROOT, GWLP_USERDATA,
+    GetAncestor, GetClientRect, GetMessageW, GetWindowLongPtrW, HMENU, IDC_ARROW, LoadCursorW,
+    MB_ICONERROR, MB_ICONINFORMATION, MSG, MessageBoxW, MoveWindow, PostMessageW, PostQuitMessage,
+    RegisterClassW, SW_SHOW, SendMessageW, SetWindowLongPtrW, SetWindowTextW, ShowWindow,
+    TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_COMMAND, WM_CREATE, WM_DESTROY,
     WM_NCCREATE, WM_NOTIFY, WM_SIZE, WNDCLASSW, WS_CHILD, WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW,
     WS_VISIBLE,
 };
+use windows::core::{HSTRING, PCWSTR, PWSTR, w};
 
 use screencap_core::encode_png::{normalize_path_separators, output_parent_dir, real_output_path};
 use screencap_core::types::WindowInfo;
@@ -476,22 +476,21 @@ fn capture_selected(state: &mut GuiState) {
     // parent path would otherwise fail with just an exit code. Check it here
     // and report clearly. Normalize first so `/` behaves like the backend.
     let normalized_out = normalize_path_separators(&out_path);
-    if let Some(parent) = output_parent_dir(&normalized_out) {
-        if !std::fs::metadata(parent)
+    if let Some(parent) = output_parent_dir(&normalized_out)
+        && !std::fs::metadata(parent)
             .map(|m| m.is_dir())
             .unwrap_or(false)
-        {
-            let msg = format!("output directory does not exist: {parent}");
-            unsafe {
-                MessageBoxW(
-                    Some(state.hwnd),
-                    &HSTRING::from(msg.as_str()),
-                    w!("screencap"),
-                    MB_ICONINFORMATION,
-                );
-            }
-            return;
+    {
+        let msg = format!("output directory does not exist: {parent}");
+        unsafe {
+            MessageBoxW(
+                Some(state.hwnd),
+                &HSTRING::from(msg.as_str()),
+                w!("screencap"),
+                MB_ICONINFORMATION,
+            );
         }
+        return;
     }
 
     let window = state.windows[idx].clone();

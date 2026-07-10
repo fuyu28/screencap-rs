@@ -7,7 +7,6 @@
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use windows::core::{IInspectable, Interface};
 use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{
     Direct3D11CaptureFrame, Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession,
@@ -17,7 +16,7 @@ use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Graphics::SizeInt32;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Direct3D11::{
-    ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_BOX, D3D11_TEXTURE2D_DESC,
+    D3D11_BOX, D3D11_TEXTURE2D_DESC, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::Graphics::Gdi::HMONITOR;
@@ -25,7 +24,8 @@ use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
 };
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
-use windows::Win32::System::WinRT::{RoInitialize, RO_INIT_MULTITHREADED};
+use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
+use windows::core::{IInspectable, Interface};
 
 use crate::d3d11_copy::{copy_texture_to_image, create_d3d11_device};
 use crate::logging::Logger;
@@ -179,10 +179,10 @@ fn run_capture_loop(
     let (tx, rx) = mpsc::channel::<Direct3D11CaptureFrame>();
     let handler =
         TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(move |sender, _args| {
-            if let Some(pool) = sender.as_ref() {
-                if let Ok(frame) = pool.TryGetNextFrame() {
-                    let _ = tx.send(frame);
-                }
+            if let Some(pool) = sender.as_ref()
+                && let Ok(frame) = pool.TryGetNextFrame()
+            {
+                let _ = tx.send(frame);
             }
             Ok(())
         });
@@ -223,31 +223,30 @@ fn run_capture_loop(
                 // the pool's texture size, and the frame must be dropped
                 // while the pool is recreated at the new size so the next
                 // frame arrives un-clamped.
-                if let Ok(content_size) = frame.ContentSize() {
-                    if content_size.Width != pool_size.Width
-                        || content_size.Height != pool_size.Height
-                    {
-                        logger.log(
-                            LogLevel::Debug,
-                            &format!(
-                                "wgc: content size changed {}x{} -> {}x{}, recreating pool",
-                                pool_size.Width,
-                                pool_size.Height,
-                                content_size.Width,
-                                content_size.Height
-                            ),
-                        );
-                        match res.frame_pool.Recreate(
-                            res.winrt_device,
-                            FRAME_POOL_PIXEL_FORMAT,
-                            FRAME_POOL_BUFFERS,
-                            content_size,
-                        ) {
-                            Ok(()) => pool_size = content_size,
-                            Err(e) => copy_err = Some(to_err(e, "CaptureWithWgc")),
-                        }
-                        continue;
+                if let Ok(content_size) = frame.ContentSize()
+                    && (content_size.Width != pool_size.Width
+                        || content_size.Height != pool_size.Height)
+                {
+                    logger.log(
+                        LogLevel::Debug,
+                        &format!(
+                            "wgc: content size changed {}x{} -> {}x{}, recreating pool",
+                            pool_size.Width,
+                            pool_size.Height,
+                            content_size.Width,
+                            content_size.Height
+                        ),
+                    );
+                    match res.frame_pool.Recreate(
+                        res.winrt_device,
+                        FRAME_POOL_PIXEL_FORMAT,
+                        FRAME_POOL_BUFFERS,
+                        content_size,
+                    ) {
+                        Ok(()) => pool_size = content_size,
+                        Err(e) => copy_err = Some(to_err(e, "CaptureWithWgc")),
                     }
+                    continue;
                 }
 
                 match copy_frame_to_image(&frame, res.d3d_device, res.d3d_context, origin) {

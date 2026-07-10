@@ -3,11 +3,11 @@ use crate::util::{build_timestamp_for_filename, iso8601_now_local};
 use std::fs::{self, File};
 use std::io::{self, Write as _};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU8, Ordering};
 
-use windows::core::{s, w};
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+use windows::core::{s, w};
 
 struct LoggerState {
     file: Option<File>,

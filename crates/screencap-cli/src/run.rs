@@ -3,25 +3,25 @@
 
 use std::time::Instant;
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use windows::Win32::Foundation::{GetLastError, HWND};
-use windows::Win32::Graphics::Gdi::{MonitorFromWindow, MONITOR_DEFAULTTONEAREST};
+use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromWindow};
 use windows::Win32::UI::HiDpi::{
-    SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS,
+    HOT_KEY_MODIFIERS, RegisterHotKey, UnregisterHotKey,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetMessageW, GetSystemMetrics, SetProcessDPIAware, MSG, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, WM_HOTKEY,
+    GetMessageW, GetSystemMetrics, MSG, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+    SM_YVIRTUALSCREEN, SetProcessDPIAware, WM_HOTKEY,
 };
 
 use screencap_core::capture_wgc::capture_with_wgc;
 use screencap_core::crop::{crop_image_in_place, resolve_crop_rect_screen};
 use screencap_core::encode_png::save_png_wic;
 use screencap_core::image_stats::compute_image_stats;
-use screencap_core::logging::{get_build_stamp, get_os_version_string, Logger};
+use screencap_core::logging::{Logger, get_build_stamp, get_os_version_string};
 use screencap_core::monitor_enum::{enumerate_monitors, find_monitor_by_token};
 use screencap_core::types::*;
 use screencap_core::util::iso8601_now_local;
@@ -326,10 +326,10 @@ fn resolve_capture_targets(
         }
     }
 
-    if !ctx.capture_rect_screen.is_valid() {
-        if let Some(w) = &ctx.window {
-            ctx.capture_rect_screen = w.rect;
-        }
+    if !ctx.capture_rect_screen.is_valid()
+        && let Some(w) = &ctx.window
+    {
+        ctx.capture_rect_screen = w.rect;
     }
 
     Ok(())
@@ -640,10 +640,10 @@ pub fn run() -> i32 {
 
     let boot = pre_parse_bootstrap(&argv);
     let mut logger = Logger::new();
-    if let Err(err) = logger.init(&boot.log_dir, &boot.command, boot.log_level) {
-        if !boot.json {
-            eprintln!("Warning: failed to initialize logger: {err}");
-        }
+    if let Err(err) = logger.init(&boot.log_dir, &boot.command, boot.log_level)
+        && !boot.json
+    {
+        eprintln!("Warning: failed to initialize logger: {err}");
     }
 
     let parsed = match cli::parse_args(&argv) {

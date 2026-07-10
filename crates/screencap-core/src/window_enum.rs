@@ -4,13 +4,13 @@ use crate::util::utf8_from_wide;
 
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Dwm::{
-    DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
+    DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute,
 };
 use windows::Win32::Graphics::Gdi::MapWindowPoints;
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetAncestor, GetClassNameW, GetClientRect, GetForegroundWindow, GetWindowRect,
-    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
-    GA_ROOT,
+    EnumWindows, GA_ROOT, GetAncestor, GetClassNameW, GetClientRect, GetForegroundWindow,
+    GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
+    IsWindowVisible,
 };
 
 pub fn get_window_text_utf8(hwnd: HWND) -> String {
@@ -83,11 +83,7 @@ fn get_dwm_frame_rect(hwnd: HWND, fallback: Rect) -> Rect {
             std::mem::size_of::<RECT>() as u32,
         )
     };
-    if ok.is_ok() {
-        r.into()
-    } else {
-        fallback
-    }
+    if ok.is_ok() { r.into() } else { fallback }
 }
 
 fn area(r: &Rect) -> i64 {
@@ -199,20 +195,20 @@ pub fn resolve_window_target(
 
     let mut candidates: Vec<&WindowInfo> = Vec::new();
     for w in all {
-        if let Some(pid) = query.pid {
-            if w.pid as i32 != pid {
-                continue;
-            }
+        if let Some(pid) = query.pid
+            && w.pid as i32 != pid
+        {
+            continue;
         }
-        if let Some(title) = &query.title {
-            if !contains_i(&w.title, title) {
-                continue;
-            }
+        if let Some(title) = &query.title
+            && !contains_i(&w.title, title)
+        {
+            continue;
         }
-        if let Some(class_name) = &query.class_name {
-            if &w.class_name != class_name {
-                continue;
-            }
+        if let Some(class_name) = &query.class_name
+            && &w.class_name != class_name
+        {
+            continue;
         }
         candidates.push(w);
     }

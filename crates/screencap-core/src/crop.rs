@@ -45,7 +45,7 @@ pub fn resolve_crop_rect_screen(
                 return Err(ErrorInfo::new(
                     "manual crop missing rect",
                     "ResolveCropRectScreen",
-                ))
+                ));
             }
         },
     };

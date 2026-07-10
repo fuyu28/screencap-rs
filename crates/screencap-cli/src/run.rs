@@ -36,6 +36,10 @@ struct RunResult {
     exit_code: i32,
     err: ErrorInfo,
     json: String,
+    /// Real on-disk path the capture was written to (may differ in casing from
+    /// the requested path on case-insensitive volumes). Empty unless a `cap`
+    /// succeeded.
+    out_path: String,
 }
 
 impl Default for RunResult {
@@ -45,6 +49,7 @@ impl Default for RunResult {
             exit_code: 1,
             err: ErrorInfo::default(),
             json: String::new(),
+            out_path: String::new(),
         }
     }
 }
@@ -376,6 +381,7 @@ fn capture_with_retry(
 fn build_cap_success_json(
     parsed: &ParsedArgs,
     ctx: &CaptureContext,
+    written_path: &str,
     dpi_applied: &str,
     duration_ms: i32,
     crop_mode: CropMode,
@@ -390,7 +396,7 @@ fn build_cap_success_json(
         "target".to_string(),
         json!(cli::target_type_name(parsed.cap.target)),
     );
-    js.insert("out_path".to_string(), json!(&parsed.cap.out_path));
+    js.insert("out_path".to_string(), json!(written_path));
     js.insert("format".to_string(), json!("png"));
     js.insert("timestamp".to_string(), json!(iso8601_now_local()));
     js.insert("duration_ms".to_string(), json!(duration_ms));
@@ -422,7 +428,7 @@ fn run_cap(parsed: &ParsedArgs, logger: &Logger, dpi_applied: &str) -> RunResult
     let mut rr = RunResult::default();
     let start = Instant::now();
 
-    let capture = || -> Result<String, ErrorInfo> {
+    let capture = || -> Result<(String, String), ErrorInfo> {
         let mut ctx = CaptureContext {
             cap: &parsed.cap,
             common: &parsed.common,
@@ -471,6 +477,12 @@ fn run_cap(parsed: &ParsedArgs, logger: &Logger, dpi_applied: &str) -> RunResult
 
         save_png_wic(&img, &parsed.cap.out_path, parsed.common.overwrite)?;
 
+        // Windows volumes are case-insensitive, so writing `test.png` when
+        // `TEST.png` already exists truncates and reuses `TEST.png` -- no
+        // `test.png` is created. Resolve the real on-disk path so the reported
+        // success points at the file that actually exists.
+        let written_path = screencap_core::encode_png::real_output_path(&parsed.cap.out_path);
+
         let duration_ms = start.elapsed().as_millis() as i32;
 
         let crop_out = CropRect {
@@ -483,6 +495,7 @@ fn run_cap(parsed: &ParsedArgs, logger: &Logger, dpi_applied: &str) -> RunResult
         let json = build_cap_success_json(
             parsed,
             &ctx,
+            &written_path,
             dpi_applied,
             duration_ms,
             crop_mode,
@@ -494,18 +507,19 @@ fn run_cap(parsed: &ParsedArgs, logger: &Logger, dpi_applied: &str) -> RunResult
             LogLevel::Info,
             &format!(
                 "result=success out_path={} duration_ms={}",
-                parsed.cap.out_path, duration_ms
+                written_path, duration_ms
             ),
         );
 
-        Ok(json)
+        Ok((json, written_path))
     };
 
     match capture() {
-        Ok(json) => {
+        Ok((json, written_path)) => {
             rr.ok = true;
             rr.exit_code = 0;
             rr.json = json;
+            rr.out_path = written_path;
         }
         Err(e) => {
             rr.err = e;
@@ -684,7 +698,7 @@ pub fn run() -> i32 {
         if parsed.common.json {
             println!("{}", rr.json);
         } else if parsed.command == CommandType::Cap {
-            println!("ok: {}", parsed.cap.out_path);
+            println!("ok: {}", rr.out_path);
         }
         return rr.exit_code;
     }

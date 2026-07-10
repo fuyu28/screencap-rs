@@ -363,3 +363,58 @@ pub fn capture_with_wgc(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> 
 
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn solid(width: i32, height: i32, pixel: [u8; 4]) -> ImageBuffer {
+        let mut bgra = Vec::with_capacity((width * height * 4) as usize);
+        for _ in 0..(width * height) {
+            bgra.extend_from_slice(&pixel);
+        }
+        ImageBuffer {
+            width,
+            height,
+            row_pitch: width * 4,
+            origin_x: 0,
+            origin_y: 0,
+            bgra,
+        }
+    }
+
+    #[test]
+    fn wgc_window_methods_recognised() {
+        assert!(is_wgc_window_method("wgc-window"));
+        assert!(is_wgc_window_method("wgc-window2"));
+    }
+
+    #[test]
+    fn non_window_methods_rejected() {
+        assert!(!is_wgc_window_method("wgc-monitor"));
+        assert!(!is_wgc_window_method("wgc-monitor2"));
+        assert!(!is_wgc_window_method("dxgi-window"));
+        assert!(!is_wgc_window_method(""));
+    }
+
+    #[test]
+    fn usable_frame_accepts_normal_content() {
+        // Fully opaque, non-black content is usable.
+        let img = solid(4, 4, [10, 20, 30, 255]);
+        assert!(is_probably_usable_frame(&img));
+    }
+
+    #[test]
+    fn usable_frame_rejects_fully_black() {
+        // black_ratio == 1.0 >= 0.98.
+        let img = solid(4, 4, [0, 0, 0, 255]);
+        assert!(!is_probably_usable_frame(&img));
+    }
+
+    #[test]
+    fn usable_frame_rejects_fully_transparent() {
+        // transparent_ratio == 1.0 >= 0.98 (non-black color so only alpha trips).
+        let img = solid(4, 4, [10, 20, 30, 0]);
+        assert!(!is_probably_usable_frame(&img));
+    }
+}

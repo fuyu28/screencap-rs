@@ -744,3 +744,83 @@ pub fn run() -> i32 {
 
     rr.exit_code
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_window() -> WindowInfo {
+        WindowInfo {
+            hwnd: 0x1234,
+            pid: 42,
+            title: "Title".to_string(),
+            class_name: "Class".to_string(),
+            rect: Rect {
+                left: 1,
+                top: 2,
+                right: 3,
+                bottom: 4,
+            },
+            client_rect_screen: Rect {
+                left: 5,
+                top: 6,
+                right: 7,
+                bottom: 8,
+            },
+            dwm_frame_rect: Rect::default(),
+            visible: true,
+            iconic: false,
+            cloaked: false,
+        }
+    }
+
+    fn sample_monitor() -> MonitorInfo {
+        MonitorInfo {
+            hmon: 0xABCD,
+            index: 1,
+            name: "\\\\.\\DISPLAY1".to_string(),
+            desktop: Rect {
+                left: 0,
+                top: 0,
+                right: 1920,
+                bottom: 1080,
+            },
+            primary: true,
+        }
+    }
+
+    #[test]
+    fn window_json_cap_variant_includes_client_rect() {
+        let v = window_json(&sample_window(), true);
+        assert_eq!(v["hwnd"], json!(0x1234u64));
+        assert_eq!(v["pid"], json!(42));
+        assert_eq!(v["title"], json!("Title"));
+        assert_eq!(v["class"], json!("Class"));
+        assert!(v.get("client_rect_screen").is_some());
+        assert_eq!(v["client_rect_screen"]["left"], json!(5));
+    }
+
+    #[test]
+    fn window_json_list_variant_omits_client_rect() {
+        let v = window_json(&sample_window(), false);
+        assert!(v.get("client_rect_screen").is_none());
+        // hwnd is serialized as a u64, never negative.
+        assert_eq!(v["hwnd"], json!(0x1234u64));
+    }
+
+    #[test]
+    fn monitor_json_list_variant_includes_name() {
+        let v = monitor_json(&sample_monitor(), true);
+        assert_eq!(v["index"], json!(1));
+        assert_eq!(v["primary"], json!(true));
+        assert_eq!(v["name"], json!("\\\\.\\DISPLAY1"));
+        assert_eq!(v["desktop"]["right"], json!(1920));
+    }
+
+    #[test]
+    fn monitor_json_cap_variant_omits_name() {
+        let v = monitor_json(&sample_monitor(), false);
+        assert!(v.get("name").is_none());
+        assert_eq!(v["index"], json!(1));
+    }
+}

@@ -164,3 +164,75 @@ pub fn get_os_version_string() -> String {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read as _;
+
+    #[test]
+    fn parse_log_level_maps_known_strings() {
+        assert_eq!(parse_log_level("trace"), LogLevel::Trace);
+        assert_eq!(parse_log_level("debug"), LogLevel::Debug);
+        assert_eq!(parse_log_level("warn"), LogLevel::Warn);
+        assert_eq!(parse_log_level("error"), LogLevel::Error);
+    }
+
+    #[test]
+    fn parse_log_level_defaults_to_info() {
+        assert_eq!(parse_log_level("info"), LogLevel::Info);
+        assert_eq!(parse_log_level("bogus"), LogLevel::Info);
+        assert_eq!(parse_log_level(""), LogLevel::Info);
+        // Case-sensitive: uppercase is not recognised and falls back to Info.
+        assert_eq!(parse_log_level("TRACE"), LogLevel::Info);
+    }
+
+    #[test]
+    fn log_level_names_round_trip_through_parse() {
+        for lv in [
+            LogLevel::Trace,
+            LogLevel::Debug,
+            LogLevel::Info,
+            LogLevel::Warn,
+            LogLevel::Error,
+        ] {
+            assert_eq!(parse_log_level(log_level_name(lv)), lv);
+        }
+    }
+
+    #[test]
+    fn log_levels_are_ordered_by_severity() {
+        assert!(LogLevel::Trace < LogLevel::Debug);
+        assert!(LogLevel::Debug < LogLevel::Info);
+        assert!(LogLevel::Info < LogLevel::Warn);
+        assert!(LogLevel::Warn < LogLevel::Error);
+    }
+
+    #[test]
+    fn logger_filters_below_min_level() {
+        let dir = std::env::temp_dir().join(format!(
+            "screencap_log_test_{}_{}",
+            std::process::id(),
+            build_timestamp_for_filename()
+        ));
+        let mut logger = Logger::new();
+        logger
+            .init(dir.to_str().unwrap(), "unittest", LogLevel::Warn)
+            .expect("logger init should succeed");
+
+        logger.log(LogLevel::Info, "below-threshold message");
+        logger.log(LogLevel::Error, "kept message");
+
+        let mut contents = String::new();
+        File::open(logger.file_path())
+            .unwrap()
+            .read_to_string(&mut contents)
+            .unwrap();
+
+        assert!(!contents.contains("below-threshold message"));
+        assert!(contents.contains("kept message"));
+        assert!(contents.contains("[error]"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

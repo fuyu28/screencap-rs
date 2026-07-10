@@ -508,4 +508,213 @@ mod tests {
         let err = parse_args(&args(&["screencap-cli"])).expect_err("no args should show help");
         assert!(is_help_error(&err));
     }
+
+    /// Minimal valid `cap` argv targeting a foreground window; callers append
+    /// extra flags to exercise specific validation branches.
+    fn base_window_cap() -> Vec<String> {
+        args(&[
+            "screencap-cli",
+            "cap",
+            "--method",
+            "wgc-window",
+            "--foreground",
+            "--out",
+            "a.png",
+        ])
+    }
+
+    #[test]
+    fn maps_window_query_and_defaults() {
+        let parsed = parse_args(&base_window_cap()).expect("should parse");
+        assert_eq!(parsed.command, CommandType::Cap);
+        assert_eq!(parsed.cap.target, TargetType::Window);
+        assert!(parsed.cap.window_query.foreground);
+        assert_eq!(parsed.cap.crop_mode, CropMode::None);
+        assert!(parsed.cap.crop_rect.is_none());
+        assert_eq!(parsed.cap.pad, Pad::default());
+        assert!(!parsed.cap.force_alpha_255);
+        assert!(!parsed.cap.hotkey_enabled);
+    }
+
+    #[test]
+    fn rejects_non_png_format() {
+        let mut argv = base_window_cap();
+        argv.extend(args(&["--format", "jpg"]));
+        let err = parse_args(&argv).expect_err("non-png format should fail");
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn rejects_stdout_flag() {
+        let mut argv = base_window_cap();
+        argv.push("--stdout".to_string());
+        let err = parse_args(&argv).expect_err("--stdout should be unsupported");
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn manual_crop_requires_crop_rect() {
+        let mut argv = base_window_cap();
+        argv.extend(args(&["--crop", "manual"]));
+        let err = parse_args(&argv).expect_err("manual crop without rect should fail");
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn manual_crop_with_rect_maps_values() {
+        let mut argv = base_window_cap();
+        argv.extend(args(&[
+            "--crop",
+            "manual",
+            "--crop-rect",
+            "10",
+            "20",
+            "30",
+            "40",
+        ]));
+        let parsed = parse_args(&argv).expect("manual crop with rect should parse");
+        assert_eq!(parsed.cap.crop_mode, CropMode::Manual);
+        assert_eq!(
+            parsed.cap.crop_rect,
+            Some(CropRect {
+                x: 10,
+                y: 20,
+                w: 30,
+                h: 40,
+            })
+        );
+    }
+
+    #[test]
+    fn pad_values_map_in_ltrb_order() {
+        let mut argv = base_window_cap();
+        argv.extend(args(&["--pad", "1", "2", "3", "4"]));
+        let parsed = parse_args(&argv).expect("pad should parse");
+        assert_eq!(
+            parsed.cap.pad,
+            Pad {
+                l: 1,
+                t: 2,
+                r: 3,
+                b: 4,
+            }
+        );
+    }
+
+    #[test]
+    fn force_alpha_only_accepts_255() {
+        let mut ok = base_window_cap();
+        ok.extend(args(&["--force-alpha", "255"]));
+        assert!(
+            parse_args(&ok)
+                .expect("255 should parse")
+                .cap
+                .force_alpha_255
+        );
+
+        let mut bad = base_window_cap();
+        bad.extend(args(&["--force-alpha", "128"]));
+        let err = parse_args(&bad).expect_err("non-255 force-alpha should fail");
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn hotkey_spec_parses_modifiers_and_key() {
+        let mut argv = base_window_cap();
+        argv.extend(args(&["--hotkey", "ctrl+shift+s"]));
+        let parsed = parse_args(&argv).expect("valid hotkey should parse");
+        assert!(parsed.cap.hotkey_enabled);
+        assert_eq!(parsed.cap.hotkey_spec, "ctrl+shift+s");
+        // 'S' virtual key.
+        assert_eq!(parsed.cap.hotkey_vk, b'S' as u32);
+        // Modifiers include control and shift bits (NOREPEAT is always set).
+        let expected = MOD_NOREPEAT.0 | MOD_CONTROL.0 | MOD_SHIFT.0;
+        assert_eq!(parsed.cap.hotkey_modifiers, expected);
+    }
+
+    #[test]
+    fn hotkey_without_modifier_is_invalid() {
+        let mut argv = base_window_cap();
+        argv.extend(args(&["--hotkey", "s"]));
+        let err = parse_args(&argv).expect_err("hotkey without modifier should fail");
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn hotkey_foreground_requires_hotkey() {
+        // --hotkey-foreground alone (no --hotkey) is rejected; use an explicit
+        // window target so we exercise the hotkey branch, not the target check.
+        let argv = args(&[
+            "screencap-cli",
+            "cap",
+            "--method",
+            "wgc-window",
+            "--hwnd",
+            "1234",
+            "--out",
+            "a.png",
+            "--hotkey-foreground",
+        ]);
+        let err = parse_args(&argv).expect_err("hotkey-foreground without hotkey should fail");
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn hotkey_foreground_forces_window_query() {
+        let mut argv = args(&[
+            "screencap-cli",
+            "cap",
+            "--method",
+            "wgc-window",
+            "--hwnd",
+            "1234",
+            "--out",
+            "a.png",
+        ]);
+        argv.extend(args(&["--hotkey", "alt+f9", "--hotkey-foreground"]));
+        let parsed = parse_args(&argv).expect("hotkey-foreground with hotkey should parse");
+        assert!(parsed.cap.hotkey_enabled);
+        assert!(parsed.cap.window_query.foreground);
+    }
+
+    #[test]
+    fn screen_target_requires_monitor_or_virtual() {
+        let argv = args(&[
+            "screencap-cli",
+            "cap",
+            "--method",
+            "wgc-monitor",
+            "--target",
+            "screen",
+            "--out",
+            "a.png",
+        ]);
+        let err = parse_args(&argv).expect_err("screen target needs monitor/virtual");
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn virtual_screen_target_parses() {
+        let argv = args(&[
+            "screencap-cli",
+            "cap",
+            "--method",
+            "wgc-monitor",
+            "--target",
+            "screen",
+            "--virtual-screen",
+            "--out",
+            "a.png",
+        ]);
+        let parsed = parse_args(&argv).expect("virtual-screen should parse");
+        assert_eq!(parsed.cap.target, TargetType::Screen);
+        assert!(parsed.cap.screen_query.virtual_screen);
+    }
+
+    #[test]
+    fn list_defaults_do_not_require_cap_flags() {
+        let parsed = parse_args(&args(&["screencap-cli", "list", "monitors"]))
+            .expect("list monitors should parse");
+        assert_eq!(parsed.command, CommandType::ListMonitors);
+    }
 }

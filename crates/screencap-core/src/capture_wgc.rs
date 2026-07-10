@@ -29,7 +29,7 @@ use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemIntero
 use windows::Win32::System::WinRT::{RoInitialize, RO_INIT_MULTITHREADED};
 
 use crate::d3d11_copy::{copy_texture_to_image, create_d3d11_device};
-use crate::logging::{Logger, OptionLoggerExt};
+use crate::logging::Logger;
 use crate::types::{CaptureContext, ErrorInfo, ImageBuffer, LogLevel, Rect};
 
 const MAX_FRAMES: usize = 5;
@@ -150,6 +150,10 @@ fn copy_frame_to_image(
     )
 }
 
+fn is_wgc_window_method(method: &str) -> bool {
+    method == "wgc-window" || method == "wgc-window2"
+}
+
 fn is_probably_usable_frame(img: &ImageBuffer) -> bool {
     let (black_ratio, transparent_ratio) = crate::image_stats::compute_frame_ratios(img);
     transparent_ratio < 0.98 && black_ratio < 0.98
@@ -169,7 +173,7 @@ struct WgcResources<'a> {
 /// the calling thread.
 fn run_capture_loop(
     ctx: &CaptureContext,
-    logger: Option<&Logger>,
+    logger: &Logger,
     res: &WgcResources,
     initial_pool_size: SizeInt32,
 ) -> Result<ImageBuffer, ErrorInfo> {
@@ -199,7 +203,7 @@ fn run_capture_loop(
     let deadline = Instant::now() + timeout;
 
     // Loop-invariant: the same origin is used for every frame in this loop.
-    let origin = if ctx.cap.method == "wgc-window" || ctx.cap.method == "wgc-window2" {
+    let origin = if is_wgc_window_method(&ctx.cap.method) {
         ctx.window
             .as_ref()
             .map_or(ctx.capture_rect_screen, |w| w.dwm_frame_rect)
@@ -310,7 +314,7 @@ pub fn capture_with_wgc(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> 
     let winrt_device = create_winrt_d3d_device(&d3d_device)?;
 
     let item =
-        if ctx.cap.method == "wgc-window" || ctx.cap.method == "wgc-window2" {
+        if is_wgc_window_method(&ctx.cap.method) {
             let window = ctx.window.as_ref().ok_or_else(|| {
                 ErrorInfo::new("wgc-window needs window target", "CaptureWithWgc")
             })?;

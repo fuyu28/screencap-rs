@@ -23,7 +23,7 @@ use screencap_core::capture_wgc::capture_with_wgc;
 use screencap_core::crop::{crop_image_in_place, resolve_crop_rect_screen};
 use screencap_core::encode_png::save_png_wic;
 use screencap_core::image_stats::compute_image_stats;
-use screencap_core::logging::{get_build_stamp, get_os_version_string, Logger, OptionLoggerExt};
+use screencap_core::logging::{get_build_stamp, get_os_version_string, Logger};
 use screencap_core::monitor_enum::{enumerate_monitors, find_monitor_by_token};
 use screencap_core::types::*;
 use screencap_core::util::iso8601_now_local;
@@ -97,7 +97,7 @@ fn pre_parse_bootstrap(argv: &[String]) -> BootstrapOptions {
 }
 
 /// Returns the applied DPI mode string ("per-monitor-v2" or "system").
-fn apply_dpi_mode(requested: DpiMode, logger: Option<&Logger>) -> String {
+fn apply_dpi_mode(requested: DpiMode, logger: &Logger) -> String {
     fn set_system() -> String {
         unsafe {
             let _ = SetProcessDPIAware();
@@ -121,8 +121,10 @@ fn apply_dpi_mode(requested: DpiMode, logger: Option<&Logger>) -> String {
     set_system()
 }
 
-fn window_json(w: &WindowInfo) -> Value {
-    json!({
+/// The `cap` output additionally reports `client_rect_screen`; `list windows`
+/// omits it.
+fn window_json(w: &WindowInfo, include_client_rect: bool) -> Value {
+    let mut v = json!({
         "hwnd": w.hwnd as u64,
         "pid": w.pid,
         "title": &w.title,
@@ -131,38 +133,29 @@ fn window_json(w: &WindowInfo) -> Value {
         "visible": w.visible,
         "iconic": w.iconic,
         "cloaked": w.cloaked,
-    })
+    });
+    if include_client_rect {
+        v.as_object_mut().unwrap().insert(
+            "client_rect_screen".to_string(),
+            json!(w.client_rect_screen),
+        );
+    }
+    v
 }
 
-fn cap_window_json(w: &WindowInfo) -> Value {
-    json!({
-        "hwnd": w.hwnd as u64,
-        "pid": w.pid,
-        "title": &w.title,
-        "class": &w.class_name,
-        "rect": w.rect,
-        "visible": w.visible,
-        "iconic": w.iconic,
-        "cloaked": w.cloaked,
-        "client_rect_screen": w.client_rect_screen,
-    })
-}
-
-fn list_monitor_json(m: &MonitorInfo) -> Value {
-    json!({
-        "index": m.index,
-        "name": &m.name,
-        "desktop": m.desktop,
-        "primary": m.primary,
-    })
-}
-
-fn cap_monitor_json(m: &MonitorInfo) -> Value {
-    json!({
+/// The `list monitors` output additionally reports `name`; `cap` omits it.
+fn monitor_json(m: &MonitorInfo, include_name: bool) -> Value {
+    let mut v = json!({
         "index": m.index,
         "desktop": m.desktop,
         "primary": m.primary,
-    })
+    });
+    if include_name {
+        v.as_object_mut()
+            .unwrap()
+            .insert("name".to_string(), json!(&m.name));
+    }
+    v
 }
 
 fn run_list_windows(parsed: &ParsedArgs) -> RunResult {
@@ -176,7 +169,7 @@ fn run_list_windows(parsed: &ParsedArgs) -> RunResult {
             "ok": true,
             "command": "list windows",
             "timestamp": iso8601_now_local(),
-            "windows": ws.iter().map(window_json).collect::<Vec<_>>(),
+            "windows": ws.iter().map(|w| window_json(w, false)).collect::<Vec<_>>(),
         })
         .to_string();
     } else {
@@ -212,7 +205,7 @@ fn run_list_monitors(parsed: &ParsedArgs) -> RunResult {
             "ok": true,
             "command": "list monitors",
             "timestamp": iso8601_now_local(),
-            "monitors": ms.iter().map(list_monitor_json).collect::<Vec<_>>(),
+            "monitors": ms.iter().map(|m| monitor_json(m, true)).collect::<Vec<_>>(),
         })
         .to_string();
     } else {
@@ -252,7 +245,7 @@ fn virtual_screen_rect() -> Rect {
 /// `ctx.window`, `ctx.monitor`, and `ctx.capture_rect_screen`.
 fn resolve_capture_targets(
     parsed: &ParsedArgs,
-    logger: Option<&Logger>,
+    logger: &Logger,
     ctx: &mut CaptureContext,
 ) -> Result<(), ErrorInfo> {
     let method = &parsed.cap.method;
@@ -347,7 +340,7 @@ fn resolve_capture_targets(
 fn capture_with_retry(
     parsed: &ParsedArgs,
     ctx: &CaptureContext,
-    logger: Option<&Logger>,
+    logger: &Logger,
 ) -> (Result<ImageBuffer, ErrorInfo>, i32, i32) {
     let mut adapter_index: i32 = -1;
     let mut output_index: i32 = -1;
@@ -418,11 +411,11 @@ fn build_cap_success_json(
     js.insert("dpi_mode".to_string(), json!(dpi_applied));
 
     if let Some(w) = &ctx.window {
-        js.insert("window".to_string(), cap_window_json(w));
+        js.insert("window".to_string(), window_json(w, true));
     }
 
     if let Some(m) = &ctx.monitor {
-        js.insert("monitor".to_string(), cap_monitor_json(m));
+        js.insert("monitor".to_string(), monitor_json(m, false));
     }
 
     js.insert(
@@ -439,7 +432,7 @@ fn build_cap_success_json(
     Value::Object(js).to_string()
 }
 
-fn run_cap(parsed: &ParsedArgs, logger: Option<&Logger>, dpi_applied: &str) -> RunResult {
+fn run_cap(parsed: &ParsedArgs, logger: &Logger, dpi_applied: &str) -> RunResult {
     let mut rr = RunResult::default();
     let start = Instant::now();
 
@@ -552,11 +545,7 @@ fn run_cap(parsed: &ParsedArgs, logger: Option<&Logger>, dpi_applied: &str) -> R
     rr
 }
 
-fn log_startup(logger: Option<&Logger>, parsed: Option<&ParsedArgs>, dpi_mode: &str) {
-    let logger = match logger {
-        Some(l) => l,
-        None => return,
-    };
+fn log_startup(logger: &Logger, parsed: Option<&ParsedArgs>, dpi_mode: &str) {
     logger.log(LogLevel::Info, &format!("version={VERSION}"));
     logger.log(LogLevel::Info, &format!("build={}", get_build_stamp()));
     logger.log(LogLevel::Info, &format!("os={}", get_os_version_string()));
@@ -594,7 +583,7 @@ fn build_failure_json(
     .to_string()
 }
 
-fn wait_for_hotkey(parsed: &ParsedArgs, logger: Option<&Logger>) -> Result<(), ErrorInfo> {
+fn wait_for_hotkey(parsed: &ParsedArgs, logger: &Logger) -> Result<(), ErrorInfo> {
     if !parsed.cap.hotkey_enabled {
         return Ok(());
     }
@@ -675,14 +664,14 @@ pub fn run() -> i32 {
     let parsed = match cli::parse_args(&argv) {
         Ok(parsed) => parsed,
         Err(err) if cli::is_help_error(&err) => {
-            let dpi_applied = apply_dpi_mode(DpiMode::PerMonitorV2, Some(&logger));
-            log_startup(Some(&logger), None, &dpi_applied);
+            let dpi_applied = apply_dpi_mode(DpiMode::PerMonitorV2, &logger);
+            log_startup(&logger, None, &dpi_applied);
             print!("{err}");
             return 0;
         }
         Err(err) => {
-            let dpi_applied = apply_dpi_mode(DpiMode::PerMonitorV2, Some(&logger));
-            log_startup(Some(&logger), None, &dpi_applied);
+            let dpi_applied = apply_dpi_mode(DpiMode::PerMonitorV2, &logger);
+            log_startup(&logger, None, &dpi_applied);
             let error = err.to_string();
             logger.log(LogLevel::Error, &format!("parse error: {error}"));
             if boot.json {
@@ -698,17 +687,17 @@ pub fn run() -> i32 {
         }
     };
 
-    let dpi_applied = apply_dpi_mode(parsed.common.dpi_mode, Some(&logger));
+    let dpi_applied = apply_dpi_mode(parsed.common.dpi_mode, &logger);
 
-    log_startup(Some(&logger), Some(&parsed), &dpi_applied);
+    log_startup(&logger, Some(&parsed), &dpi_applied);
 
     let rr = if parsed.command == CommandType::ListWindows {
         run_list_windows(&parsed)
     } else if parsed.command == CommandType::ListMonitors {
         run_list_monitors(&parsed)
     } else if parsed.cap.hotkey_enabled {
-        match wait_for_hotkey(&parsed, Some(&logger)) {
-            Ok(()) => run_cap(&parsed, Some(&logger), &dpi_applied),
+        match wait_for_hotkey(&parsed, &logger) {
+            Ok(()) => run_cap(&parsed, &logger, &dpi_applied),
             Err(e) => RunResult {
                 err: e,
                 exit_code: 1,
@@ -716,7 +705,7 @@ pub fn run() -> i32 {
             },
         }
     } else {
-        run_cap(&parsed, Some(&logger), &dpi_applied)
+        run_cap(&parsed, &logger, &dpi_applied)
     };
 
     if rr.ok {

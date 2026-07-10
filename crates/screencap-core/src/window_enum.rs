@@ -1,4 +1,4 @@
-use crate::logging::{Logger, OptionLoggerExt};
+use crate::logging::Logger;
 use crate::types::{ErrorInfo, LogLevel, Rect, TargetWindowQuery, WindowInfo};
 use crate::util::utf8_from_wide;
 
@@ -169,7 +169,7 @@ pub fn enumerate_windows() -> Vec<WindowInfo> {
 pub fn resolve_window_target(
     query: &TargetWindowQuery,
     all: &[WindowInfo],
-    logger: Option<&Logger>,
+    logger: &Logger,
 ) -> Result<(WindowInfo, String), ErrorInfo> {
     if let Some(hwnd_val) = query.hwnd {
         let target = hwnd_val as isize;

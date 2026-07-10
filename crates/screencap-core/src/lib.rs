@@ -1,7 +1,5 @@
 //! Windows screenshot capture library.
 
-pub mod capture_dxgi;
-pub mod capture_gdi;
 pub mod capture_wgc;
 pub mod crop;
 mod d3d11_copy;

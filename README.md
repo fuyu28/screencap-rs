@@ -22,9 +22,11 @@ Binaries land in `target/x86_64-pc-windows-msvc/release/`
 
 ## Capture methods
 
-- `gdi-printwindow`, `gdi-bitblt-client`, `gdi-bitblt-windowdc`, `gdi-bitblt-screen`
-- `dxgi-monitor`, `dxgi-window` (output duplication)
-- `wgc-window`, `wgc-monitor` (Windows.Graphics.Capture, ContentSize-cropped)
+- `wgc-window`, `wgc-window2` (window capture)
+- `wgc-monitor`, `wgc-monitor2` (monitor capture)
+
+All methods use Windows.Graphics.Capture and are cropped to the frame's
+ContentSize.
 
 See the original repo's `docs/capture-investigation.md` for the method
 comparison notes.

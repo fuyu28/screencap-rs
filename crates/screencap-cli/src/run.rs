@@ -17,8 +17,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, WM_HOTKEY,
 };
 
-use screencap_core::capture_dxgi::capture_with_dxgi;
-use screencap_core::capture_gdi::capture_with_gdi;
 use screencap_core::capture_wgc::capture_with_wgc;
 use screencap_core::crop::{crop_image_in_place, resolve_crop_rect_screen};
 use screencap_core::encode_png::save_png_wic;
@@ -282,10 +280,7 @@ fn resolve_capture_targets(
         ctx.window = Some(w);
     }
 
-    if parsed.cap.target == TargetType::Screen
-        || method.contains("monitor")
-        || method == "dxgi-window"
-    {
+    if parsed.cap.target == TargetType::Screen || method.contains("monitor") {
         let monitors = enumerate_monitors();
         if parsed.cap.screen_query.virtual_screen {
             ctx.capture_rect_screen = virtual_screen_rect();
@@ -335,36 +330,27 @@ fn resolve_capture_targets(
     Ok(())
 }
 
-/// Runs the capture method with retries, returning the captured image plus
-/// the DXGI adapter/output indices (only meaningful for `dxgi-*` methods).
+/// Runs the WGC capture with retries. Non-WGC methods are rejected with a
+/// validation error listing the supported methods.
 fn capture_with_retry(
     parsed: &ParsedArgs,
     ctx: &CaptureContext,
     logger: &Logger,
-) -> (Result<ImageBuffer, ErrorInfo>, i32, i32) {
-    let mut adapter_index: i32 = -1;
-    let mut output_index: i32 = -1;
+) -> Result<ImageBuffer, ErrorInfo> {
+    if !parsed.cap.method.starts_with("wgc-") {
+        return Err(ErrorInfo::new(
+            format!(
+                "unknown method '{}' (supported: wgc-window, wgc-window2, wgc-monitor, wgc-monitor2)",
+                parsed.cap.method
+            ),
+            "RunCap",
+        ));
+    }
+
     let mut capture_result: Result<ImageBuffer, ErrorInfo> = Err(ErrorInfo::default());
 
     for attempt in 0..=parsed.common.retry {
-        let result: Result<ImageBuffer, ErrorInfo> = if parsed.cap.method.starts_with("gdi-") {
-            capture_with_gdi(ctx)
-        } else if parsed.cap.method.starts_with("dxgi-") {
-            match capture_with_dxgi(ctx) {
-                Ok((buf, a, o)) => {
-                    adapter_index = a;
-                    output_index = o;
-                    Ok(buf)
-                }
-                Err(e) => Err(e),
-            }
-        } else if parsed.cap.method.starts_with("wgc-") {
-            capture_with_wgc(ctx)
-        } else {
-            Err(ErrorInfo::new("unknown method", "RunCap"))
-        };
-
-        match result {
+        match capture_with_wgc(ctx) {
             Ok(buf) => {
                 capture_result = Ok(buf);
                 break;
@@ -382,7 +368,7 @@ fn capture_with_retry(
         }
     }
 
-    (capture_result, adapter_index, output_index)
+    capture_result
 }
 
 /// Builds the success-path JSON payload for a completed capture.
@@ -448,24 +434,12 @@ fn run_cap(parsed: &ParsedArgs, logger: &Logger, dpi_applied: &str) -> RunResult
 
         resolve_capture_targets(parsed, logger, &mut ctx)?;
 
-        let (capture_result, adapter_index, output_index) =
-            capture_with_retry(parsed, &ctx, logger);
-        let mut img = capture_result?;
+        let mut img = capture_with_retry(parsed, &ctx, logger)?;
 
         if parsed.cap.force_alpha_255 {
             for px in img.bgra.chunks_exact_mut(4) {
                 px[3] = 255;
             }
-        }
-
-        if parsed.cap.method.starts_with("dxgi-") {
-            logger.log(
-                LogLevel::Info,
-                &format!(
-                    "DXGI adapter_index={} output_index={} frame_size={}x{} row_pitch={}",
-                    adapter_index, output_index, img.width, img.height, img.row_pitch
-                ),
-            );
         }
 
         let img_rect = Rect {
@@ -474,10 +448,7 @@ fn run_cap(parsed: &ParsedArgs, logger: &Logger, dpi_applied: &str) -> RunResult
             right: img.origin_x + img.width,
             bottom: img.origin_y + img.height,
         };
-        let mut crop_mode = parsed.cap.crop_mode;
-        if crop_mode == CropMode::None && parsed.cap.method == "dxgi-window" {
-            crop_mode = CropMode::Window;
-        }
+        let crop_mode = parsed.cap.crop_mode;
 
         let crop_rect = resolve_crop_rect_screen(
             crop_mode,

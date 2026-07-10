@@ -56,12 +56,7 @@ const ID_STATUS: u16 = 1007;
 /// text, which the handler reclaims with `Box::from_raw`.
 const WM_APP_CAPTURE_DONE: u32 = WM_APP + 1;
 
-const METHODS: [&str; 4] = [
-    "wgc-window",
-    "gdi-printwindow",
-    "gdi-bitblt-windowdc",
-    "dxgi-window",
-];
+const METHODS: [&str; 2] = ["wgc-window", "wgc-window2"];
 
 /// Per-window state. A pointer to this struct is stored in GWLP_USERDATA so the
 /// window procedure can recover its context.

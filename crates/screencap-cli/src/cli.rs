@@ -472,7 +472,7 @@ mod tests {
             "screencap-cli",
             "cap",
             "--method",
-            "dxgi-monitor",
+            "wgc-monitor",
             "--target",
             "screen",
             "--monitor",
@@ -483,6 +483,7 @@ mod tests {
         .expect("screen capture should parse");
 
         assert_eq!(parsed.command, CommandType::Cap);
+        assert_eq!(parsed.cap.method, "wgc-monitor");
         assert_eq!(parsed.cap.target, TargetType::Screen);
         assert_eq!(parsed.cap.screen_query.monitor.as_deref(), Some("primary"));
         assert_eq!(parsed.cap.out_path, "a.png");

@@ -309,7 +309,7 @@ pub fn capture_with_wgc(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> 
     }
 
     let (d3d_device, d3d_context) =
-        create_d3d11_device(None, D3D_DRIVER_TYPE_HARDWARE, "CaptureWithWgc")?;
+        create_d3d11_device(D3D_DRIVER_TYPE_HARDWARE, "CaptureWithWgc")?;
 
     let winrt_device = create_winrt_d3d_device(&d3d_device)?;
 

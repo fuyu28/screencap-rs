@@ -5,7 +5,6 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ, D3D11_SDK_VERSION,
     D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
 };
-use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIAdapter1};
 
 use crate::types::{ErrorInfo, ImageBuffer, Rect};
 
@@ -14,16 +13,14 @@ fn win_error(message: &str, where_: &str, e: windows::core::Error) -> ErrorInfo 
 }
 
 pub fn create_d3d11_device(
-    adapter: Option<&IDXGIAdapter1>,
     driver_type: D3D_DRIVER_TYPE,
     where_: &str,
 ) -> Result<(ID3D11Device, ID3D11DeviceContext), ErrorInfo> {
-    let adapter: Option<&IDXGIAdapter> = adapter.map(|a| a.into());
     let mut device: Option<ID3D11Device> = None;
     let mut context: Option<ID3D11DeviceContext> = None;
     unsafe {
         D3D11CreateDevice(
-            adapter,
+            None,
             driver_type,
             HMODULE::default(),
             D3D11_CREATE_DEVICE_BGRA_SUPPORT,

@@ -8,7 +8,8 @@ members = [
 
 [workspace.package]
 version = "0.2.0"
-edition = "2021"
+edition = "2024"
+rust-version = "1.85"
 
 [workspace.dependencies]
 windows = { version = "0.62", features = [

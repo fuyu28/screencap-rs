@@ -37,8 +37,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_VISIBLE,
 };
 
+use screencap_core::encode_png::{normalize_path_separators, output_parent_dir, real_output_path};
 use screencap_core::types::WindowInfo;
-use screencap_core::util::{build_timestamp_for_filename, utf8_from_wide, wide_from_utf8};
+use screencap_core::util::{
+    build_timestamp_for_filename, utf8_from_wide, validate_output_path, wide_from_utf8,
+};
 use screencap_core::window_enum::{enumerate_windows, get_window_text_utf8};
 
 const ID_LIST: u16 = 1001;
@@ -56,12 +59,7 @@ const ID_STATUS: u16 = 1007;
 /// text, which the handler reclaims with `Box::from_raw`.
 const WM_APP_CAPTURE_DONE: u32 = WM_APP + 1;
 
-const METHODS: [&str; 4] = [
-    "wgc-window",
-    "gdi-printwindow",
-    "gdi-bitblt-windowdc",
-    "dxgi-window",
-];
+const METHODS: [&str; 2] = ["wgc-window", "wgc-window2"];
 
 /// Per-window state. A pointer to this struct is stored in GWLP_USERDATA so the
 /// window procedure can recover its context.
@@ -459,6 +457,43 @@ fn capture_selected(state: &mut GuiState) {
         return;
     }
 
+    // Reject clearly-invalid paths up front with a clear message, rather than
+    // letting the capture backend fail opaquely. `/` is a valid separator and
+    // passes this check.
+    if let Err(reason) = validate_output_path(&out_path) {
+        unsafe {
+            MessageBoxW(
+                Some(state.hwnd),
+                &HSTRING::from(reason.as_str()),
+                w!("screencap"),
+                MB_ICONINFORMATION,
+            );
+        }
+        return;
+    }
+
+    // The capture backend refuses to create missing directories, so a bad
+    // parent path would otherwise fail with just an exit code. Check it here
+    // and report clearly. Normalize first so `/` behaves like the backend.
+    let normalized_out = normalize_path_separators(&out_path);
+    if let Some(parent) = output_parent_dir(&normalized_out) {
+        if !std::fs::metadata(parent)
+            .map(|m| m.is_dir())
+            .unwrap_or(false)
+        {
+            let msg = format!("output directory does not exist: {parent}");
+            unsafe {
+                MessageBoxW(
+                    Some(state.hwnd),
+                    &HSTRING::from(msg.as_str()),
+                    w!("screencap"),
+                    MB_ICONINFORMATION,
+                );
+            }
+            return;
+        }
+    }
+
     let window = state.windows[idx].clone();
     let method = selected_method(state);
 
@@ -505,7 +540,11 @@ fn on_capture_done(state: &mut GuiState, wparam: WPARAM, lparam: LPARAM) {
     }
 
     if wparam.0 == 1 {
-        set_status(state, &format!("Saved: {}", state.pending_out));
+        // Report the real on-disk path: on case-insensitive volumes a request
+        // for `test.png` may have landed in an existing `TEST.png`, and the
+        // status must name the file that actually exists.
+        let real = real_output_path(&state.pending_out);
+        set_status(state, &format!("Saved: {real}"));
         return;
     }
 

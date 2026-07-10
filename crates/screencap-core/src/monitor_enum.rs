@@ -81,3 +81,55 @@ pub fn find_monitor_by_token(monitors: &[MonitorInfo], token: &str) -> Option<Mo
     let idx = parse_monitor_index(token)?;
     monitors.iter().find(|m| m.index == idx).cloned()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Rect;
+
+    fn monitor(index: i32, primary: bool) -> MonitorInfo {
+        MonitorInfo {
+            hmon: 0x1000 + index as isize,
+            index,
+            name: format!("\\\\.\\DISPLAY{}", index + 1),
+            desktop: Rect {
+                left: 0,
+                top: 0,
+                right: 1920,
+                bottom: 1080,
+            },
+            primary,
+        }
+    }
+
+    fn sample_monitors() -> Vec<MonitorInfo> {
+        vec![monitor(0, false), monitor(1, true), monitor(2, false)]
+    }
+
+    #[test]
+    fn parse_monitor_index_reads_decimal_and_trims() {
+        assert_eq!(parse_monitor_index("2"), Some(2));
+        assert_eq!(parse_monitor_index("  1 "), Some(1));
+        assert_eq!(parse_monitor_index("primary"), None);
+        assert_eq!(parse_monitor_index("1x"), None);
+    }
+
+    #[test]
+    fn find_monitor_by_token_primary() {
+        let m = find_monitor_by_token(&sample_monitors(), "primary").unwrap();
+        assert_eq!(m.index, 1);
+        assert!(m.primary);
+    }
+
+    #[test]
+    fn find_monitor_by_token_valid_index() {
+        let m = find_monitor_by_token(&sample_monitors(), "2").unwrap();
+        assert_eq!(m.index, 2);
+    }
+
+    #[test]
+    fn find_monitor_by_token_out_of_range_and_garbage() {
+        assert!(find_monitor_by_token(&sample_monitors(), "9").is_none());
+        assert!(find_monitor_by_token(&sample_monitors(), "nope").is_none());
+    }
+}

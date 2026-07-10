@@ -17,8 +17,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, WM_HOTKEY,
 };
 
-use screencap_core::capture_dxgi::capture_with_dxgi;
-use screencap_core::capture_gdi::capture_with_gdi;
 use screencap_core::capture_wgc::capture_with_wgc;
 use screencap_core::crop::{crop_image_in_place, resolve_crop_rect_screen};
 use screencap_core::encode_png::save_png_wic;
@@ -38,6 +36,10 @@ struct RunResult {
     exit_code: i32,
     err: ErrorInfo,
     json: String,
+    /// Real on-disk path the capture was written to (may differ in casing from
+    /// the requested path on case-insensitive volumes). Empty unless a `cap`
+    /// succeeded.
+    out_path: String,
 }
 
 impl Default for RunResult {
@@ -47,6 +49,7 @@ impl Default for RunResult {
             exit_code: 1,
             err: ErrorInfo::default(),
             json: String::new(),
+            out_path: String::new(),
         }
     }
 }
@@ -250,7 +253,7 @@ fn resolve_capture_targets(
 ) -> Result<(), ErrorInfo> {
     let method = &parsed.cap.method;
 
-    let needs_window = method.contains("window") || method.contains("client");
+    let needs_window = method.contains("window");
     if needs_window && parsed.cap.target != TargetType::Window {
         return Err(ErrorInfo::new(
             format!("method '{method}' requires --target window"),
@@ -282,10 +285,7 @@ fn resolve_capture_targets(
         ctx.window = Some(w);
     }
 
-    if parsed.cap.target == TargetType::Screen
-        || method.contains("monitor")
-        || method == "dxgi-window"
-    {
+    if parsed.cap.target == TargetType::Screen || method.contains("monitor") {
         let monitors = enumerate_monitors();
         if parsed.cap.screen_query.virtual_screen {
             ctx.capture_rect_screen = virtual_screen_rect();
@@ -335,36 +335,27 @@ fn resolve_capture_targets(
     Ok(())
 }
 
-/// Runs the capture method with retries, returning the captured image plus
-/// the DXGI adapter/output indices (only meaningful for `dxgi-*` methods).
+/// Runs the WGC capture with retries. Non-WGC methods are rejected with a
+/// validation error listing the supported methods.
 fn capture_with_retry(
     parsed: &ParsedArgs,
     ctx: &CaptureContext,
     logger: &Logger,
-) -> (Result<ImageBuffer, ErrorInfo>, i32, i32) {
-    let mut adapter_index: i32 = -1;
-    let mut output_index: i32 = -1;
+) -> Result<ImageBuffer, ErrorInfo> {
+    if !parsed.cap.method.starts_with("wgc-") {
+        return Err(ErrorInfo::new(
+            format!(
+                "unknown method '{}' (supported: wgc-window, wgc-window2, wgc-monitor, wgc-monitor2)",
+                parsed.cap.method
+            ),
+            "RunCap",
+        ));
+    }
+
     let mut capture_result: Result<ImageBuffer, ErrorInfo> = Err(ErrorInfo::default());
 
     for attempt in 0..=parsed.common.retry {
-        let result: Result<ImageBuffer, ErrorInfo> = if parsed.cap.method.starts_with("gdi-") {
-            capture_with_gdi(ctx)
-        } else if parsed.cap.method.starts_with("dxgi-") {
-            match capture_with_dxgi(ctx) {
-                Ok((buf, a, o)) => {
-                    adapter_index = a;
-                    output_index = o;
-                    Ok(buf)
-                }
-                Err(e) => Err(e),
-            }
-        } else if parsed.cap.method.starts_with("wgc-") {
-            capture_with_wgc(ctx)
-        } else {
-            Err(ErrorInfo::new("unknown method", "RunCap"))
-        };
-
-        match result {
+        match capture_with_wgc(ctx) {
             Ok(buf) => {
                 capture_result = Ok(buf);
                 break;
@@ -382,7 +373,7 @@ fn capture_with_retry(
         }
     }
 
-    (capture_result, adapter_index, output_index)
+    capture_result
 }
 
 /// Builds the success-path JSON payload for a completed capture.
@@ -390,6 +381,7 @@ fn capture_with_retry(
 fn build_cap_success_json(
     parsed: &ParsedArgs,
     ctx: &CaptureContext,
+    written_path: &str,
     dpi_applied: &str,
     duration_ms: i32,
     crop_mode: CropMode,
@@ -404,7 +396,7 @@ fn build_cap_success_json(
         "target".to_string(),
         json!(cli::target_type_name(parsed.cap.target)),
     );
-    js.insert("out_path".to_string(), json!(&parsed.cap.out_path));
+    js.insert("out_path".to_string(), json!(written_path));
     js.insert("format".to_string(), json!("png"));
     js.insert("timestamp".to_string(), json!(iso8601_now_local()));
     js.insert("duration_ms".to_string(), json!(duration_ms));
@@ -436,7 +428,7 @@ fn run_cap(parsed: &ParsedArgs, logger: &Logger, dpi_applied: &str) -> RunResult
     let mut rr = RunResult::default();
     let start = Instant::now();
 
-    let capture = || -> Result<String, ErrorInfo> {
+    let capture = || -> Result<(String, String), ErrorInfo> {
         let mut ctx = CaptureContext {
             cap: &parsed.cap,
             common: &parsed.common,
@@ -448,24 +440,12 @@ fn run_cap(parsed: &ParsedArgs, logger: &Logger, dpi_applied: &str) -> RunResult
 
         resolve_capture_targets(parsed, logger, &mut ctx)?;
 
-        let (capture_result, adapter_index, output_index) =
-            capture_with_retry(parsed, &ctx, logger);
-        let mut img = capture_result?;
+        let mut img = capture_with_retry(parsed, &ctx, logger)?;
 
         if parsed.cap.force_alpha_255 {
             for px in img.bgra.chunks_exact_mut(4) {
                 px[3] = 255;
             }
-        }
-
-        if parsed.cap.method.starts_with("dxgi-") {
-            logger.log(
-                LogLevel::Info,
-                &format!(
-                    "DXGI adapter_index={} output_index={} frame_size={}x{} row_pitch={}",
-                    adapter_index, output_index, img.width, img.height, img.row_pitch
-                ),
-            );
         }
 
         let img_rect = Rect {
@@ -474,10 +454,7 @@ fn run_cap(parsed: &ParsedArgs, logger: &Logger, dpi_applied: &str) -> RunResult
             right: img.origin_x + img.width,
             bottom: img.origin_y + img.height,
         };
-        let mut crop_mode = parsed.cap.crop_mode;
-        if crop_mode == CropMode::None && parsed.cap.method == "dxgi-window" {
-            crop_mode = CropMode::Window;
-        }
+        let crop_mode = parsed.cap.crop_mode;
 
         let crop_rect = resolve_crop_rect_screen(
             crop_mode,
@@ -500,6 +477,12 @@ fn run_cap(parsed: &ParsedArgs, logger: &Logger, dpi_applied: &str) -> RunResult
 
         save_png_wic(&img, &parsed.cap.out_path, parsed.common.overwrite)?;
 
+        // Windows volumes are case-insensitive, so writing `test.png` when
+        // `TEST.png` already exists truncates and reuses `TEST.png` -- no
+        // `test.png` is created. Resolve the real on-disk path so the reported
+        // success points at the file that actually exists.
+        let written_path = screencap_core::encode_png::real_output_path(&parsed.cap.out_path);
+
         let duration_ms = start.elapsed().as_millis() as i32;
 
         let crop_out = CropRect {
@@ -512,6 +495,7 @@ fn run_cap(parsed: &ParsedArgs, logger: &Logger, dpi_applied: &str) -> RunResult
         let json = build_cap_success_json(
             parsed,
             &ctx,
+            &written_path,
             dpi_applied,
             duration_ms,
             crop_mode,
@@ -523,18 +507,19 @@ fn run_cap(parsed: &ParsedArgs, logger: &Logger, dpi_applied: &str) -> RunResult
             LogLevel::Info,
             &format!(
                 "result=success out_path={} duration_ms={}",
-                parsed.cap.out_path, duration_ms
+                written_path, duration_ms
             ),
         );
 
-        Ok(json)
+        Ok((json, written_path))
     };
 
     match capture() {
-        Ok(json) => {
+        Ok((json, written_path)) => {
             rr.ok = true;
             rr.exit_code = 0;
             rr.json = json;
+            rr.out_path = written_path;
         }
         Err(e) => {
             rr.err = e;
@@ -713,7 +698,7 @@ pub fn run() -> i32 {
         if parsed.common.json {
             println!("{}", rr.json);
         } else if parsed.command == CommandType::Cap {
-            println!("ok: {}", parsed.cap.out_path);
+            println!("ok: {}", rr.out_path);
         }
         return rr.exit_code;
     }
@@ -743,4 +728,154 @@ pub fn run() -> i32 {
     }
 
     rr.exit_code
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_window() -> WindowInfo {
+        WindowInfo {
+            hwnd: 0x1234,
+            pid: 42,
+            title: "Title".to_string(),
+            class_name: "Class".to_string(),
+            rect: Rect {
+                left: 1,
+                top: 2,
+                right: 3,
+                bottom: 4,
+            },
+            client_rect_screen: Rect {
+                left: 5,
+                top: 6,
+                right: 7,
+                bottom: 8,
+            },
+            dwm_frame_rect: Rect::default(),
+            visible: true,
+            iconic: false,
+            cloaked: false,
+        }
+    }
+
+    fn sample_monitor() -> MonitorInfo {
+        MonitorInfo {
+            hmon: 0xABCD,
+            index: 1,
+            name: "\\\\.\\DISPLAY1".to_string(),
+            desktop: Rect {
+                left: 0,
+                top: 0,
+                right: 1920,
+                bottom: 1080,
+            },
+            primary: true,
+        }
+    }
+
+    #[test]
+    fn window_json_cap_variant_includes_client_rect() {
+        let v = window_json(&sample_window(), true);
+        assert_eq!(v["hwnd"], json!(0x1234u64));
+        assert_eq!(v["pid"], json!(42));
+        assert_eq!(v["title"], json!("Title"));
+        assert_eq!(v["class"], json!("Class"));
+        assert!(v.get("client_rect_screen").is_some());
+        assert_eq!(v["client_rect_screen"]["left"], json!(5));
+    }
+
+    #[test]
+    fn window_json_list_variant_omits_client_rect() {
+        let v = window_json(&sample_window(), false);
+        assert!(v.get("client_rect_screen").is_none());
+        // hwnd is serialized as a u64, never negative.
+        assert_eq!(v["hwnd"], json!(0x1234u64));
+    }
+
+    #[test]
+    fn monitor_json_list_variant_includes_name() {
+        let v = monitor_json(&sample_monitor(), true);
+        assert_eq!(v["index"], json!(1));
+        assert_eq!(v["primary"], json!(true));
+        assert_eq!(v["name"], json!("\\\\.\\DISPLAY1"));
+        assert_eq!(v["desktop"]["right"], json!(1920));
+    }
+
+    #[test]
+    fn monitor_json_cap_variant_omits_name() {
+        let v = monitor_json(&sample_monitor(), false);
+        assert!(v.get("name").is_none());
+        assert_eq!(v["index"], json!(1));
+    }
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn pre_parse_bootstrap_defaults_when_absent() {
+        let b = pre_parse_bootstrap(&argv(&["screencap", "cap"]));
+        assert_eq!(b.log_dir, "./logs");
+        assert_eq!(b.log_level, LogLevel::Info);
+        assert_eq!(b.command, "cap");
+        assert!(!b.json);
+    }
+
+    #[test]
+    fn pre_parse_bootstrap_space_separated_flags() {
+        let b = pre_parse_bootstrap(&argv(&[
+            "screencap",
+            "cap",
+            "--log-dir",
+            "C:\\logs",
+            "--log-level",
+            "debug",
+            "--json",
+        ]));
+        assert_eq!(b.log_dir, "C:\\logs");
+        assert_eq!(b.log_level, LogLevel::Debug);
+        assert!(b.json);
+    }
+
+    #[test]
+    fn pre_parse_bootstrap_equals_form_flags() {
+        let b = pre_parse_bootstrap(&argv(&[
+            "screencap",
+            "cap",
+            "--log-dir=C:\\logs",
+            "--log-level=warn",
+        ]));
+        assert_eq!(b.log_dir, "C:\\logs");
+        assert_eq!(b.log_level, LogLevel::Warn);
+    }
+
+    #[test]
+    fn pre_parse_bootstrap_list_windows_command_name() {
+        let b = pre_parse_bootstrap(&argv(&["screencap", "list", "windows"]));
+        assert_eq!(b.command, "list_windows");
+    }
+
+    #[test]
+    fn build_failure_json_shape() {
+        let err = ErrorInfo::new("boom", "SomeWhere");
+        let s = build_failure_json("cap", "wgc-window", "window", "out.png", "system", 12, &err);
+        let v: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(v["ok"], json!(false));
+        assert_eq!(v["command"], json!("cap"));
+        assert_eq!(v["method"], json!("wgc-window"));
+        assert_eq!(v["target"], json!("window"));
+        assert_eq!(v["out_path"], json!("out.png"));
+        assert_eq!(v["format"], json!("png"));
+        assert_eq!(v["duration_ms"], json!(12));
+        assert_eq!(v["dpi_mode"], json!("system"));
+        assert_eq!(v["window"], Value::Null);
+        assert_eq!(v["monitor"], Value::Null);
+        assert_eq!(v["crop"], Value::Null);
+        assert_eq!(v["image_stats"], Value::Null);
+        // timestamp comes from a now-time call; just assert its presence.
+        assert!(v.get("timestamp").is_some());
+        // error is a serialized ErrorInfo object.
+        assert!(v.get("error").is_some());
+    }
 }

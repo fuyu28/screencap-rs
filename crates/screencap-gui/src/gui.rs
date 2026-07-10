@@ -26,14 +26,14 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, CBS_DROPDOWNLIST, CREATESTRUCTW, CW_USEDEFAULT,
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, ES_AUTOHSCROLL, GA_ROOT, GWLP_USERDATA,
-    GetAncestor, GetClientRect, GetMessageW, GetWindowLongPtrW, HMENU, IDC_ARROW, LoadCursorW,
-    MB_ICONERROR, MB_ICONINFORMATION, MSG, MessageBoxW, MoveWindow, PostMessageW, PostQuitMessage,
-    RegisterClassW, SW_SHOW, SendMessageW, SetWindowLongPtrW, SetWindowTextW, ShowWindow,
-    TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_COMMAND, WM_CREATE, WM_DESTROY,
-    WM_NCCREATE, WM_NOTIFY, WM_SIZE, WNDCLASSW, WS_CHILD, WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW,
-    WS_VISIBLE,
+    CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, CBN_SELCHANGE, CBS_DROPDOWNLIST, CREATESTRUCTW,
+    CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, ES_AUTOHSCROLL, GA_ROOT,
+    GWLP_USERDATA, GetAncestor, GetClientRect, GetMessageW, GetWindowLongPtrW, HMENU, IDC_ARROW,
+    LoadCursorW, MB_ICONERROR, MB_ICONINFORMATION, MSG, MessageBoxW, MoveWindow, PostMessageW,
+    PostQuitMessage, RegisterClassW, SW_SHOW, SendMessageW, SetWindowLongPtrW, SetWindowTextW,
+    ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_COMMAND, WM_CREATE,
+    WM_DESTROY, WM_NCCREATE, WM_NOTIFY, WM_SIZE, WNDCLASSW, WS_CHILD, WS_EX_CLIENTEDGE,
+    WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 use windows::core::{HSTRING, PCWSTR, PWSTR, w};
 
@@ -51,6 +51,7 @@ const ID_OUT: u16 = 1004;
 const ID_BROWSE: u16 = 1005;
 const ID_CAPTURE: u16 = 1006;
 const ID_STATUS: u16 = 1007;
+const ID_FORMAT: u16 = 1008;
 
 /// Posted from the capture worker thread to the GUI thread once
 /// screencap-cli.exe has finished (or failed to start). `WPARAM` is 1 for
@@ -61,6 +62,10 @@ const WM_APP_CAPTURE_DONE: u32 = WM_APP + 1;
 
 const METHODS: [&str; 2] = ["wgc-window", "wgc-window2"];
 
+/// Output formats offered in the format combobox; the string doubles as the
+/// `--format` value passed to screencap-cli and the output-file extension.
+const FORMATS: [&str; 2] = ["png", "jpg"];
+
 /// Per-window state. A pointer to this struct is stored in GWLP_USERDATA so the
 /// window procedure can recover its context.
 #[derive(Default)]
@@ -69,6 +74,7 @@ struct GuiState {
     list: HWND,
     refresh: HWND,
     method: HWND,
+    format: HWND,
     out: HWND,
     browse: HWND,
     capture: HWND,
@@ -130,6 +136,7 @@ fn resize_controls(state: &GuiState) {
     let out_h = 24;
     let status_h = 22;
     let method_w = 150;
+    let format_w = 90;
     let browse_w = 80;
     let capture_w = 92;
     let refresh_w = 80;
@@ -143,6 +150,14 @@ fn resize_controls(state: &GuiState) {
             pad + refresh_w + pad,
             pad,
             method_w,
+            180,
+            true,
+        );
+        let _ = MoveWindow(
+            state.format,
+            pad + refresh_w + pad + method_w + pad,
+            pad,
+            format_w,
             180,
             true,
         );
@@ -294,9 +309,18 @@ fn refresh_windows(state: &mut GuiState) {
     set_status(state, &format!("Windows: {}", state.windows.len()));
 }
 
-fn build_save_filter() -> Vec<u16> {
+/// Builds the Save-dialog filter for the selected format (`"png"` or `"jpg"`),
+/// keeping the All-files entry.
+fn build_save_filter(format: &str) -> Vec<u16> {
+    let image_entry = format!("{} image (*.{format})", format.to_uppercase());
+    let image_pattern = format!("*.{format}");
     let mut buf = Vec::new();
-    for part in ["PNG image (*.png)", "*.png", "All files (*.*)", "*.*"] {
+    for part in [
+        image_entry.as_str(),
+        image_pattern.as_str(),
+        "All files (*.*)",
+        "*.*",
+    ] {
         buf.extend(wide_from_utf8(part));
         buf.push(0);
     }
@@ -307,7 +331,9 @@ fn build_save_filter() -> Vec<u16> {
 fn browse_output(state: &mut GuiState) {
     let current = get_window_text_utf8(state.out);
     let mut file_buf = to_wide_fixed(&current, 260);
-    let filter = build_save_filter();
+    let format = selected_format(state);
+    let filter = build_save_filter(format);
+    let def_ext = to_wide(format);
 
     let mut ofn = OPENFILENAMEW {
         lStructSize: size_of::<OPENFILENAMEW>() as u32,
@@ -315,7 +341,7 @@ fn browse_output(state: &mut GuiState) {
         lpstrFilter: PCWSTR(filter.as_ptr()),
         lpstrFile: PWSTR(file_buf.as_mut_ptr()),
         nMaxFile: file_buf.len() as u32,
-        lpstrDefExt: w!("png"),
+        lpstrDefExt: PCWSTR(def_ext.as_ptr()),
         Flags: OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST,
         ..Default::default()
     };
@@ -327,6 +353,9 @@ fn browse_output(state: &mut GuiState) {
             .unwrap_or(file_buf.len());
         let path = utf8_from_wide(&file_buf[..end]);
         set_window_text(state.out, &path);
+        // The user may have picked the All-files filter or typed a mismatched
+        // extension; keep the extension in step with the format combobox.
+        sync_output_extension(state);
     }
 }
 
@@ -336,6 +365,26 @@ fn selected_method(state: &GuiState) -> &'static str {
         return METHODS[0];
     }
     METHODS.get(idx as usize).copied().unwrap_or(METHODS[0])
+}
+
+fn selected_format(state: &GuiState) -> &'static str {
+    let idx = unsafe { SendMessageW(state.format, CB_GETCURSEL, None, None) }.0 as i32;
+    if idx < 0 {
+        return FORMATS[0];
+    }
+    FORMATS.get(idx as usize).copied().unwrap_or(FORMATS[0])
+}
+
+/// Rewrites the output-path extension to match the selected format so the
+/// default timestamp filename tracks the format combobox.
+fn sync_output_extension(state: &GuiState) {
+    let current = get_window_text_utf8(state.out);
+    if current.is_empty() {
+        return;
+    }
+    let mut path = PathBuf::from(&current);
+    path.set_extension(selected_format(state));
+    set_window_text(state.out, &path.to_string_lossy());
 }
 
 fn selected_window_index(state: &GuiState) -> Option<usize> {
@@ -380,7 +429,12 @@ fn cli_exe_path() -> PathBuf {
 
 /// Shell out to screencap-cli.exe with `CREATE_NO_WINDOW` so no console flashes
 /// up.
-fn run_capture_process(window: &WindowInfo, method: &str, out_path: &str) -> Result<(), String> {
+fn run_capture_process(
+    window: &WindowInfo,
+    method: &str,
+    out_path: &str,
+    format: &str,
+) -> Result<(), String> {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     let cli_path = cli_exe_path();
@@ -388,7 +442,8 @@ fn run_capture_process(window: &WindowInfo, method: &str, out_path: &str) -> Res
         return Err("screencap-cli.exe was not found next to screencap.exe.".to_string());
     }
 
-    let status = Command::new(&cli_path)
+    let mut command = Command::new(&cli_path);
+    command
         .arg("cap")
         .arg("--method")
         .arg(method)
@@ -403,9 +458,14 @@ fn run_capture_process(window: &WindowInfo, method: &str, out_path: &str) -> Res
         .arg("--timeout-ms")
         .arg("2000")
         .arg("--force-alpha")
-        .arg("255")
-        .creation_flags(CREATE_NO_WINDOW)
-        .status();
+        .arg("255");
+
+    // Omit --format for PNG (the CLI default) to keep the command line minimal.
+    if format != "png" {
+        command.arg("--format").arg(format);
+    }
+
+    let status = command.creation_flags(CREATE_NO_WINDOW).status();
 
     match status {
         Ok(status) if status.success() => Ok(()),
@@ -495,6 +555,7 @@ fn capture_selected(state: &mut GuiState) {
 
     let window = state.windows[idx].clone();
     let method = selected_method(state);
+    let format = selected_format(state);
 
     state.capturing = true;
     state.pending_out = out_path.clone();
@@ -510,7 +571,7 @@ fn capture_selected(state: &mut GuiState) {
     // thread boundary as an isize and rebuild the HWND on the other side.
     let hwnd_raw = state.hwnd.0 as isize;
     std::thread::spawn(move || {
-        let result = run_capture_process(&window, method, &out_path);
+        let result = run_capture_process(&window, method, &out_path, format);
         let (wparam, lparam): (usize, isize) = match result {
             Ok(()) => (1, 0),
             Err(err) => (0, Box::into_raw(Box::new(err)) as isize),
@@ -629,6 +690,31 @@ fn create_controls(state: &mut GuiState, hwnd: HWND) {
         SendMessageW(state.method, CB_SETCURSEL, Some(WPARAM(0)), Some(LPARAM(0)));
     }
 
+    state.format = create_child(
+        hwnd,
+        instance,
+        Default::default(),
+        w!("COMBOBOX"),
+        PCWSTR::null(),
+        WS_CHILD | WS_VISIBLE | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
+        ID_FORMAT,
+    );
+
+    for f in FORMATS {
+        let wf = to_wide(f);
+        unsafe {
+            SendMessageW(
+                state.format,
+                CB_ADDSTRING,
+                Some(WPARAM(0)),
+                Some(LPARAM(wf.as_ptr() as isize)),
+            );
+        }
+    }
+    unsafe {
+        SendMessageW(state.format, CB_SETCURSEL, Some(WPARAM(0)), Some(LPARAM(0)));
+    }
+
     state.out = create_child(
         hwnd,
         instance,
@@ -728,6 +814,7 @@ unsafe extern "system" fn wnd_proc(
         WM_COMMAND => {
             if let Some(state) = unsafe { state_ptr.as_mut() } {
                 let id = wparam.0 as u16;
+                let code = (wparam.0 >> 16) as u16;
                 if id == ID_REFRESH {
                     refresh_windows(state);
                     return LRESULT(0);
@@ -736,6 +823,9 @@ unsafe extern "system" fn wnd_proc(
                     return LRESULT(0);
                 } else if id == ID_CAPTURE {
                     capture_selected(state);
+                    return LRESULT(0);
+                } else if id == ID_FORMAT && code == CBN_SELCHANGE as u16 {
+                    sync_output_extension(state);
                     return LRESULT(0);
                 }
             }

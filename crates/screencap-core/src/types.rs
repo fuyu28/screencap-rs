@@ -184,6 +184,22 @@ pub enum CropMode {
     Manual,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageFormat {
+    Png,
+    Jpg,
+}
+
+impl ImageFormat {
+    /// Lowercase name used in JSON output and log lines.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ImageFormat::Png => "png",
+            ImageFormat::Jpg => "jpg",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {
     Trace,
@@ -249,6 +265,9 @@ pub struct CapOptions {
     pub crop_rect: Option<CropRect>,
     pub pad: Pad,
     pub force_alpha_255: bool,
+    pub format: ImageFormat,
+    /// JPEG quality (1-100); ignored for PNG.
+    pub quality: u8,
 }
 
 impl Default for CapOptions {
@@ -267,6 +286,8 @@ impl Default for CapOptions {
             crop_rect: None,
             pad: Pad::default(),
             force_alpha_255: false,
+            format: ImageFormat::Png,
+            quality: 90,
         }
     }
 }

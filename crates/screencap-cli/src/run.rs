@@ -253,7 +253,7 @@ fn resolve_capture_targets(
 ) -> Result<(), ErrorInfo> {
     let method = &parsed.cap.method;
 
-    let needs_window = method.contains("window") || method.contains("client");
+    let needs_window = method.contains("window");
     if needs_window && parsed.cap.target != TargetType::Window {
         return Err(ErrorInfo::new(
             format!("method '{method}' requires --target window"),
@@ -807,5 +807,75 @@ mod tests {
         let v = monitor_json(&sample_monitor(), false);
         assert!(v.get("name").is_none());
         assert_eq!(v["index"], json!(1));
+    }
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn pre_parse_bootstrap_defaults_when_absent() {
+        let b = pre_parse_bootstrap(&argv(&["screencap", "cap"]));
+        assert_eq!(b.log_dir, "./logs");
+        assert_eq!(b.log_level, LogLevel::Info);
+        assert_eq!(b.command, "cap");
+        assert!(!b.json);
+    }
+
+    #[test]
+    fn pre_parse_bootstrap_space_separated_flags() {
+        let b = pre_parse_bootstrap(&argv(&[
+            "screencap",
+            "cap",
+            "--log-dir",
+            "C:\\logs",
+            "--log-level",
+            "debug",
+            "--json",
+        ]));
+        assert_eq!(b.log_dir, "C:\\logs");
+        assert_eq!(b.log_level, LogLevel::Debug);
+        assert!(b.json);
+    }
+
+    #[test]
+    fn pre_parse_bootstrap_equals_form_flags() {
+        let b = pre_parse_bootstrap(&argv(&[
+            "screencap",
+            "cap",
+            "--log-dir=C:\\logs",
+            "--log-level=warn",
+        ]));
+        assert_eq!(b.log_dir, "C:\\logs");
+        assert_eq!(b.log_level, LogLevel::Warn);
+    }
+
+    #[test]
+    fn pre_parse_bootstrap_list_windows_command_name() {
+        let b = pre_parse_bootstrap(&argv(&["screencap", "list", "windows"]));
+        assert_eq!(b.command, "list_windows");
+    }
+
+    #[test]
+    fn build_failure_json_shape() {
+        let err = ErrorInfo::new("boom", "SomeWhere");
+        let s = build_failure_json("cap", "wgc-window", "window", "out.png", "system", 12, &err);
+        let v: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(v["ok"], json!(false));
+        assert_eq!(v["command"], json!("cap"));
+        assert_eq!(v["method"], json!("wgc-window"));
+        assert_eq!(v["target"], json!("window"));
+        assert_eq!(v["out_path"], json!("out.png"));
+        assert_eq!(v["format"], json!("png"));
+        assert_eq!(v["duration_ms"], json!(12));
+        assert_eq!(v["dpi_mode"], json!("system"));
+        assert_eq!(v["window"], Value::Null);
+        assert_eq!(v["monitor"], Value::Null);
+        assert_eq!(v["crop"], Value::Null);
+        assert_eq!(v["image_stats"], Value::Null);
+        // timestamp comes from a now-time call; just assert its presence.
+        assert!(v.get("timestamp").is_some());
+        // error is a serialized ErrorInfo object.
+        assert!(v.get("error").is_some());
     }
 }

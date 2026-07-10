@@ -1,5 +1,5 @@
 use windows::Win32::Foundation::HMODULE;
-use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE;
+use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_CPU_ACCESS_READ,
     D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ, D3D11_SDK_VERSION,
@@ -12,16 +12,13 @@ fn win_error(message: &str, where_: &str, e: windows::core::Error) -> ErrorInfo 
     ErrorInfo::with_hresult(message, where_, e.code().0 as u32)
 }
 
-pub fn create_d3d11_device(
-    driver_type: D3D_DRIVER_TYPE,
-    where_: &str,
-) -> Result<(ID3D11Device, ID3D11DeviceContext), ErrorInfo> {
+pub fn create_d3d11_device(where_: &str) -> Result<(ID3D11Device, ID3D11DeviceContext), ErrorInfo> {
     let mut device: Option<ID3D11Device> = None;
     let mut context: Option<ID3D11DeviceContext> = None;
     unsafe {
         D3D11CreateDevice(
             None,
-            driver_type,
+            D3D_DRIVER_TYPE_HARDWARE,
             HMODULE::default(),
             D3D11_CREATE_DEVICE_BGRA_SUPPORT,
             None,

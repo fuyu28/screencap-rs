@@ -37,7 +37,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_VISIBLE,
 };
 
-use screencap_core::encode_png::{normalize_path_separators, real_output_path};
+use screencap_core::encode_png::{normalize_path_separators, output_parent_dir, real_output_path};
 use screencap_core::types::WindowInfo;
 use screencap_core::util::{
     build_timestamp_for_filename, utf8_from_wide, validate_output_path, wide_from_utf8,
@@ -476,13 +476,12 @@ fn capture_selected(state: &mut GuiState) {
     // parent path would otherwise fail with just an exit code. Check it here
     // and report clearly. Normalize first so `/` behaves like the backend.
     let normalized_out = normalize_path_separators(&out_path);
-    if let Some(parent) = std::path::Path::new(&normalized_out).parent() {
-        if !parent.as_os_str().is_empty()
-            && !std::fs::metadata(parent)
-                .map(|m| m.is_dir())
-                .unwrap_or(false)
+    if let Some(parent) = output_parent_dir(&normalized_out) {
+        if !std::fs::metadata(parent)
+            .map(|m| m.is_dir())
+            .unwrap_or(false)
         {
-            let msg = format!("output directory does not exist: {}", parent.display());
+            let msg = format!("output directory does not exist: {parent}");
             unsafe {
                 MessageBoxW(
                     Some(state.hwnd),

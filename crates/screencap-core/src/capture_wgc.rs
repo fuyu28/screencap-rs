@@ -16,7 +16,6 @@ use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Graphics::SizeInt32;
 use windows::Win32::Foundation::HWND;
-use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
     ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_BOX, D3D11_TEXTURE2D_DESC,
 };
@@ -308,8 +307,7 @@ pub fn capture_with_wgc(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> 
         ));
     }
 
-    let (d3d_device, d3d_context) =
-        create_d3d11_device(D3D_DRIVER_TYPE_HARDWARE, "CaptureWithWgc")?;
+    let (d3d_device, d3d_context) = create_d3d11_device("CaptureWithWgc")?;
 
     let winrt_device = create_winrt_d3d_device(&d3d_device)?;
 

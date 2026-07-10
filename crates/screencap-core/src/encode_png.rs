@@ -118,7 +118,10 @@ pub fn real_output_path(requested: &str) -> String {
 /// is a bare filename saved to the current directory (nothing to check).
 /// `Path::parent` yields `Some("")` for such filenames, which is treated the
 /// same as no parent.
-fn output_parent_dir(normalized: &str) -> Option<&str> {
+///
+/// Callers should normalize separators (see [`normalize_path_separators`])
+/// before calling so the parent matches what the capture backend checks.
+pub fn output_parent_dir(normalized: &str) -> Option<&str> {
     match std::path::Path::new(normalized)
         .parent()
         .and_then(|p| p.to_str())

@@ -243,3 +243,27 @@ pub fn resolve_window_target(
 
     Ok((winner, reason))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn contains_i_matches_ignoring_case() {
+        assert!(contains_i("My Notepad Window", "notepad"));
+        assert!(contains_i("NOTEPAD", "Notepad"));
+    }
+
+    #[test]
+    fn contains_i_non_match_returns_false() {
+        assert!(!contains_i("My Notepad Window", "chrome"));
+    }
+
+    #[test]
+    fn contains_i_empty_needle_matches_without_panicking() {
+        // The empty-needle guard must return true and never reach the
+        // panicking `windows(0)` call.
+        assert!(contains_i("anything", ""));
+        assert!(contains_i("", ""));
+    }
+}

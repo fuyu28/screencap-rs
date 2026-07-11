@@ -43,6 +43,17 @@ For JPEG, `--quality <1-100>` sets the encode quality (default `90`);
 combobox (the CLI default quality applies); the output-file extension follows
 the selected format.
 
+## Cursor
+
+Captures exclude the mouse cursor by default. Pass `--cursor` to include it.
+The GUI exposes an "Include cursor" checkbox (unchecked by default) that maps
+to the same flag.
+
+> **Breaking change (v0.4.0):** earlier versions included the cursor. Captures
+> now omit it unless `--cursor` (or the GUI checkbox) is set. Cursor exclusion
+> requires Windows 10 version 1903 (build 18362) or later; `--cursor` works on
+> any WGC-capable build because it leaves the session at its default.
+
 ## Embedding
 
 `screencap-cli.exe` is designed to be bundled next to a host application and

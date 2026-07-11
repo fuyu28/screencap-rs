@@ -338,21 +338,39 @@ pub fn capture_with_wgc(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> 
         .CreateCaptureSession(&item)
         .map_err(|e| to_err(e, "CaptureWithWgc"))?;
 
+    // WGC includes the cursor by default, so only excluding it needs the
+    // IsCursorCaptureEnabled property (Windows 10 version 1903 / build 18362+).
+    // Skipping the call when the cursor is requested keeps --cursor working on
+    // older builds; exclusion fails clearly where the property is missing.
+    //
     // From here on, session/frame_pool exist, so we always close them before
-    // returning -- whatever run_capture_loop produces (Ok or Err) is
-    // returned only after cleanup runs.
-    let result = run_capture_loop(
-        ctx,
-        logger,
-        &WgcResources {
-            frame_pool: &frame_pool,
-            session: &session,
-            winrt_device: &winrt_device,
-            d3d_device: &d3d_device,
-            d3d_context: &d3d_context,
-        },
-        size,
-    );
+    // returning -- any error (including the property failure) reaches the
+    // return only after cleanup runs.
+    let result = if ctx.cap.include_cursor {
+        Ok(())
+    } else {
+        session.SetIsCursorCaptureEnabled(false).map_err(|e| {
+            to_err_with(
+                "SetIsCursorCaptureEnabled failed (cursor exclusion requires Windows 10 version 1903 / build 18362 or later; pass --cursor to include the cursor instead)",
+                "CaptureWithWgc",
+                &e,
+            )
+        })
+    }
+    .and_then(|()| {
+        run_capture_loop(
+            ctx,
+            logger,
+            &WgcResources {
+                frame_pool: &frame_pool,
+                session: &session,
+                winrt_device: &winrt_device,
+                d3d_device: &d3d_device,
+                d3d_context: &d3d_context,
+            },
+            size,
+        )
+    });
 
     let _ = session.Close();
     let _ = frame_pool.Close();

@@ -12,10 +12,7 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     HOT_KEY_MODIFIERS, RegisterHotKey, UnregisterHotKey,
 };
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetMessageW, GetSystemMetrics, MSG, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-    SM_YVIRTUALSCREEN, SetProcessDPIAware, WM_HOTKEY,
-};
+use windows::Win32::UI::WindowsAndMessaging::{GetMessageW, MSG, SetProcessDPIAware, WM_HOTKEY};
 
 use screencap_core::capture_wgc::capture_with_wgc;
 use screencap_core::crop::{crop_image_in_place, resolve_crop_rect_screen};
@@ -238,21 +235,6 @@ fn run_list_monitors(parsed: &ParsedArgs) -> RunResult {
     rr
 }
 
-fn virtual_screen_rect() -> Rect {
-    unsafe {
-        let l = GetSystemMetrics(SM_XVIRTUALSCREEN);
-        let t = GetSystemMetrics(SM_YVIRTUALSCREEN);
-        let w = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-        let h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-        Rect {
-            left: l,
-            top: t,
-            right: l + w,
-            bottom: t + h,
-        }
-    }
-}
-
 /// Resolves the window/monitor targets for a capture and fills in
 /// `ctx.window`, `ctx.monitor`, and `ctx.capture_rect_screen`.
 fn resolve_capture_targets(
@@ -296,9 +278,7 @@ fn resolve_capture_targets(
 
     if parsed.cap.target == TargetType::Screen || method.contains("monitor") {
         let monitors = enumerate_monitors();
-        if parsed.cap.screen_query.virtual_screen {
-            ctx.capture_rect_screen = virtual_screen_rect();
-        } else if let Some(token) = &parsed.cap.screen_query.monitor {
+        if let Some(token) = &parsed.cap.screen_query.monitor {
             match find_monitor_by_token(&monitors, token) {
                 Some(mon) => {
                     ctx.capture_rect_screen = mon.desktop;

@@ -109,6 +109,9 @@ struct CapCli {
     #[arg(long)]
     monitor: Option<String>,
 
+    /// Rejected at parse time: WGC cannot capture the virtual desktop as a
+    /// single item. Kept as a flag so legacy invocations get a clear message
+    /// instead of an opaque runtime failure.
     #[arg(long)]
     virtual_screen: bool,
 
@@ -371,6 +374,15 @@ impl CapCli {
         };
         let target = self.target.into();
 
+        // WGC creates a capture item per window or per monitor; there is no
+        // virtual-desktop item, so accepting this flag only led to a later
+        // "wgc-monitor needs monitor target" failure.
+        if self.virtual_screen {
+            return Err(validation_error(
+                "--virtual-screen is not supported with Windows.Graphics.Capture; use --monitor <index|primary>",
+            ));
+        }
+
         if target == TargetType::Window {
             let has_window_target = window_query.hwnd.is_some()
                 || window_query.pid.is_some()
@@ -382,10 +394,8 @@ impl CapCli {
                     "window target needs one of --hwnd/--pid/--foreground/--title/--class",
                 ));
             }
-        } else if screen_query.monitor.is_none() && !screen_query.virtual_screen {
-            return Err(validation_error(
-                "screen target needs --monitor or --virtual-screen",
-            ));
+        } else if screen_query.monitor.is_none() {
+            return Err(validation_error("screen target needs --monitor"));
         }
 
         let force_alpha_255 = match self.force_alpha {
@@ -781,7 +791,7 @@ mod tests {
     }
 
     #[test]
-    fn screen_target_requires_monitor_or_virtual() {
+    fn screen_target_requires_monitor() {
         let argv = args(&[
             "screencap-cli",
             "cap",
@@ -792,12 +802,12 @@ mod tests {
             "--out",
             "a.png",
         ]);
-        let err = parse_args(&argv).expect_err("screen target needs monitor/virtual");
+        let err = parse_args(&argv).expect_err("screen target needs --monitor");
         assert_eq!(err.kind(), ErrorKind::ValueValidation);
     }
 
     #[test]
-    fn virtual_screen_target_parses() {
+    fn virtual_screen_is_rejected() {
         let argv = args(&[
             "screencap-cli",
             "cap",
@@ -809,9 +819,13 @@ mod tests {
             "--out",
             "a.png",
         ]);
-        let parsed = parse_args(&argv).expect("virtual-screen should parse");
-        assert_eq!(parsed.cap.target, TargetType::Screen);
-        assert!(parsed.cap.screen_query.virtual_screen);
+        let err = parse_args(&argv).expect_err("--virtual-screen should be rejected");
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
+        assert!(
+            err.to_string()
+                .contains("--virtual-screen is not supported"),
+            "unexpected error: {err}"
+        );
     }
 
     /// Minimal valid `cap` argv with a caller-chosen `--out` value.

@@ -237,6 +237,7 @@ pub enum LogLevel {
 pub struct CommonOptions {
     pub log_dir: String,
     pub log_level: LogLevel,
+    pub no_log: bool,
     pub json: bool,
     pub timeout_ms: i32,
     pub retry: i32,
@@ -249,6 +250,7 @@ impl Default for CommonOptions {
         Self {
             log_dir: "./logs".to_string(),
             log_level: LogLevel::Info,
+            no_log: false,
             json: false,
             timeout_ms: 700,
             retry: 0,

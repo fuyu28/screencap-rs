@@ -197,6 +197,7 @@ fn run_capture_loop(
 
     // Do not leave FrameArrived registered after StartCapture fails; Close still
     // runs in the caller but an attached handler is unnecessary work on that path.
+    /// Unregisters the WGC `FrameArrived` handler when capture setup or the loop ends.
     struct FrameArrivedGuard<'a> {
         pool: &'a Direct3D11CaptureFramePool,
         token: i64,

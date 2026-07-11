@@ -98,6 +98,7 @@ fn to_wide(s: &str) -> Vec<u16> {
     v
 }
 
+/// NUL-padded wide buffer of fixed `len` for Win32 dialog structures (e.g. `OPENFILENAMEW`).
 fn to_wide_fixed(s: &str, len: usize) -> Vec<u16> {
     let mut v = wide_from_utf8(s);
     if v.len() > len - 1 {
@@ -130,6 +131,7 @@ fn default_output_path() -> String {
     }
 }
 
+/// Lays out child controls to fill the main window client area (`WM_SIZE`).
 fn resize_controls(state: &GuiState) {
     let mut rc = RECT::default();
     unsafe {
@@ -222,6 +224,7 @@ fn resize_controls(state: &GuiState) {
     }
 }
 
+/// Adds the Title/Class/PID/Rect columns to the window ListView.
 fn init_list_columns(list: HWND) {
     let columns: [(&str, i32); 4] = [("Title", 360), ("Class", 170), ("PID", 80), ("Rect", 180)];
     for (i, (text, width)) in columns.iter().enumerate() {
@@ -243,6 +246,7 @@ fn init_list_columns(list: HWND) {
     }
 }
 
+/// Sets a ListView cell via `LVM_SETITEMTEXTW`.
 fn set_item_text(list: HWND, item: i32, sub_item: i32, text: &str) {
     let mut wtext = to_wide(text);
     let lv = LVITEMW {
@@ -344,6 +348,7 @@ fn build_save_filter(format: ImageFormat) -> Vec<u16> {
     buf
 }
 
+/// Opens the save-file dialog and writes the chosen path into the output edit control.
 fn browse_output(state: &mut GuiState) {
     let current = get_window_text_utf8(state.out);
     let mut file_buf = to_wide_fixed(&current, 260);
@@ -381,10 +386,12 @@ fn combo_selection<T: Copy>(combo: HWND, items: &[T]) -> T {
     items.get(idx).copied().unwrap_or(items[0])
 }
 
+/// Returns the capture-method combobox selection (`wgc-window` today).
 fn selected_method(state: &GuiState) -> &'static str {
     combo_selection(state.method, &METHODS)
 }
 
+/// Returns the output-format combobox selection.
 fn selected_format(state: &GuiState) -> ImageFormat {
     combo_selection(state.format, &ImageFormat::ALL)
 }
@@ -408,6 +415,7 @@ fn sync_output_extension(state: &GuiState) {
     set_window_text(state.out, &path.to_string_lossy());
 }
 
+/// Maps the ListView selection to an index in [`GuiState::windows`] via `LVIF_PARAM`.
 fn selected_window_index(state: &GuiState) -> Option<usize> {
     let item = unsafe {
         SendMessageW(
@@ -656,6 +664,7 @@ fn on_capture_done(state: &mut GuiState, wparam: WPARAM, lparam: LPARAM) {
     }
 }
 
+/// Creates a child window with the given control ID; returns a null HWND on failure.
 fn create_child(
     parent: HWND,
     instance: HINSTANCE,
@@ -814,6 +823,8 @@ fn create_controls(state: &mut GuiState, hwnd: HWND) {
     refresh_windows(state);
 }
 
+/// Main window procedure: creates controls, handles layout, commands, ListView
+/// double-click, async capture completion (`WM_APP_CAPTURE_DONE`), and shutdown.
 unsafe extern "system" fn wnd_proc(
     hwnd: HWND,
     msg: u32,

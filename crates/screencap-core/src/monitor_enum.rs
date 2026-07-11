@@ -16,6 +16,8 @@ struct EnumState {
     next_index: i32,
 }
 
+/// `EnumDisplayMonitors` callback: appends one [`MonitorInfo`] per handle into
+/// the [`EnumState`] in `LPARAM`.
 extern "system" fn enum_monitors_proc(
     hmon: HMONITOR,
     _hdc: HDC,

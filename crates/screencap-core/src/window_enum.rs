@@ -102,6 +102,8 @@ fn contains_i(hay: &str, needle: &str) -> bool {
         .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
+/// `EnumWindows` callback: appends one [`WindowInfo`] per top-level HWND into
+/// the `Vec` in `LPARAM`.
 extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> windows::core::BOOL {
     let vec = unsafe { &mut *(lparam.0 as *mut Vec<WindowInfo>) };
 

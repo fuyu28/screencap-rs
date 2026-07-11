@@ -1,21 +1,25 @@
-//! PNG encoding through WIC, 32bpp BGRA.
+//! Image encoding through WIC. PNG is written as 32bpp BGRA; JPEG is converted
+//! to 24bpp BGR (JPEG has no alpha) with a configurable quality.
 
 use windows::Win32::Foundation::{CloseHandle, GENERIC_WRITE, HANDLE, RPC_E_CHANGED_MODE};
 use windows::Win32::Graphics::Imaging::{
-    CLSID_WICImagingFactory, GUID_ContainerFormatPng, GUID_WICPixelFormat32bppBGRA,
-    IWICImagingFactory, WICBitmapEncoderNoCache,
+    CLSID_WICImagingFactory, GUID_ContainerFormatJpeg, GUID_ContainerFormatPng,
+    GUID_WICPixelFormat24bppBGR, GUID_WICPixelFormat32bppBGRA, IWICImagingFactory,
+    WICBitmapDitherTypeNone, WICBitmapEncoderNoCache, WICBitmapPaletteTypeCustom,
 };
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, DeleteFileW, FILE_ATTRIBUTE_DIRECTORY, FILE_FLAG_BACKUP_SEMANTICS,
     FILE_NAME_NORMALIZED, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileAttributesW,
     GetFinalPathNameByHandleW, INVALID_FILE_ATTRIBUTES, OPEN_EXISTING,
 };
+use windows::Win32::System::Com::StructuredStorage::{IPropertyBag2, PROPBAG2};
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
 };
-use windows::core::{Error as WinError, HRESULT, PCWSTR};
+use windows::Win32::System::Variant::{VARIANT, VARIANT_0_0, VARIANT_0_0_0, VT_R4};
+use windows::core::{Error as WinError, HRESULT, PCWSTR, PWSTR};
 
-use crate::types::{ErrorInfo, ImageBuffer};
+use crate::types::{ErrorInfo, ImageBuffer, ImageFormat};
 use crate::util::wide_from_utf8;
 
 const WHERE: &str = "SavePngWic";
@@ -139,11 +143,45 @@ fn win_error(message: &str, e: WinError) -> ErrorInfo {
     ErrorInfo::with_hresult(message, WHERE, e.code().0 as u32)
 }
 
+/// Sets the JPEG encoder's `ImageQuality` option (a float in `0.0..=1.0`) on
+/// the property bag returned by `CreateNewFrame`, before the frame is
+/// initialized. `quality` is the 1-100 CLI value.
+fn set_jpeg_quality(props: &IPropertyBag2, quality: u8) -> Result<(), ErrorInfo> {
+    let mut name = wide_from_utf8("ImageQuality");
+    name.push(0);
+    let option = PROPBAG2 {
+        pstrName: PWSTR(name.as_mut_ptr()),
+        ..Default::default()
+    };
+
+    let mut value = VARIANT::default();
+    value.Anonymous.Anonymous = std::mem::ManuallyDrop::new(VARIANT_0_0 {
+        vt: VT_R4,
+        Anonymous: VARIANT_0_0_0 {
+            fltVal: quality as f32 / 100.0,
+        },
+        ..Default::default()
+    });
+
+    unsafe { props.Write(1, &option, &value) }
+        .map_err(|e| win_error("set JPEG ImageQuality failed", e))
+}
+
 /// Refuses to overwrite an existing file unless `overwrite`
 /// ("output exists (use --overwrite)"), and rejects a directory target
 /// regardless of `overwrite` ("output path is a directory"). Handles COM
 /// init/uninit internally (tolerates RPC_E_CHANGED_MODE).
-pub fn save_png_wic(img: &ImageBuffer, out_path: &str, overwrite: bool) -> Result<(), ErrorInfo> {
+///
+/// PNG is written as 32bpp BGRA. JPEG is converted to 24bpp BGR (JPEG has no
+/// alpha channel) and encoded at `quality` (1-100); `quality` is ignored for
+/// PNG.
+pub fn save_image_wic(
+    img: &ImageBuffer,
+    out_path: &str,
+    overwrite: bool,
+    format: ImageFormat,
+    quality: u8,
+) -> Result<(), ErrorInfo> {
     // `/` is a valid separator on Windows; normalize it so WIC's
     // InitializeFromFilename (shell-based) reliably accepts the path instead of
     // failing opaquely.
@@ -211,8 +249,13 @@ pub fn save_png_wic(img: &ImageBuffer, out_path: &str, overwrite: bool) -> Resul
     // any later step fails, delete the partial file instead of leaving a
     // 0-byte (or corrupt) file behind that would trip the overwrite guard on
     // retry.
+    let container = match format {
+        ImageFormat::Png => &GUID_ContainerFormatPng,
+        ImageFormat::Jpg => &GUID_ContainerFormatJpeg,
+    };
+
     let encode = || -> Result<(), ErrorInfo> {
-        let encoder = unsafe { factory.CreateEncoder(&GUID_ContainerFormatPng, std::ptr::null()) }
+        let encoder = unsafe { factory.CreateEncoder(container, std::ptr::null()) }
             .map_err(|e| win_error("CreateEncoder failed", e))?;
 
         unsafe { encoder.Initialize(&stream, WICBitmapEncoderNoCache) }
@@ -224,18 +267,68 @@ pub fn save_png_wic(img: &ImageBuffer, out_path: &str, overwrite: bool) -> Resul
             .map_err(|e| win_error("CreateNewFrame failed", e))?;
         let frame = frame.ok_or_else(|| ErrorInfo::new("CreateNewFrame failed", WHERE))?;
 
+        // The JPEG quality option lives on the frame's property bag and must be
+        // written before Initialize consumes it.
+        if format == ImageFormat::Jpg
+            && let Some(props) = props.as_ref()
+        {
+            set_jpeg_quality(props, quality)?;
+        }
+
         unsafe { frame.Initialize(props.as_ref()) }
             .map_err(|e| win_error("Frame Initialize failed", e))?;
 
         unsafe { frame.SetSize(img.width as u32, img.height as u32) }
             .map_err(|e| win_error("SetSize failed", e))?;
 
-        let mut fmt = GUID_WICPixelFormat32bppBGRA;
-        unsafe { frame.SetPixelFormat(&mut fmt) }
-            .map_err(|e| win_error("SetPixelFormat failed", e))?;
+        match format {
+            ImageFormat::Png => {
+                let mut fmt = GUID_WICPixelFormat32bppBGRA;
+                unsafe { frame.SetPixelFormat(&mut fmt) }
+                    .map_err(|e| win_error("SetPixelFormat failed", e))?;
 
-        unsafe { frame.WritePixels(img.height as u32, img.row_pitch as u32, &img.bgra) }
-            .map_err(|e| win_error("WritePixels failed", e))?;
+                unsafe { frame.WritePixels(img.height as u32, img.row_pitch as u32, &img.bgra) }
+                    .map_err(|e| win_error("WritePixels failed", e))?;
+            }
+            ImageFormat::Jpg => {
+                let mut fmt = GUID_WICPixelFormat24bppBGR;
+                unsafe { frame.SetPixelFormat(&mut fmt) }
+                    .map_err(|e| win_error("SetPixelFormat failed", e))?;
+
+                // Wrap the BGRA buffer as a WIC bitmap (CreateBitmapFromMemory
+                // honors row_pitch, so padded rows are handled) and convert to
+                // 24bpp BGR through a format converter. WriteSource then drives
+                // the alpha-dropping conversion into the JPEG frame.
+                let source = unsafe {
+                    factory.CreateBitmapFromMemory(
+                        img.width as u32,
+                        img.height as u32,
+                        &GUID_WICPixelFormat32bppBGRA,
+                        img.row_pitch as u32,
+                        &img.bgra,
+                    )
+                }
+                .map_err(|e| win_error("CreateBitmapFromMemory failed", e))?;
+
+                let converter = unsafe { factory.CreateFormatConverter() }
+                    .map_err(|e| win_error("CreateFormatConverter failed", e))?;
+
+                unsafe {
+                    converter.Initialize(
+                        &source,
+                        &GUID_WICPixelFormat24bppBGR,
+                        WICBitmapDitherTypeNone,
+                        None,
+                        0.0,
+                        WICBitmapPaletteTypeCustom,
+                    )
+                }
+                .map_err(|e| win_error("FormatConverter Initialize failed", e))?;
+
+                unsafe { frame.WriteSource(&converter, std::ptr::null()) }
+                    .map_err(|e| win_error("WriteSource failed", e))?;
+            }
+        }
 
         unsafe { frame.Commit() }.map_err(|e| win_error("Frame Commit failed", e))?;
         unsafe { encoder.Commit() }.map_err(|e| win_error("Encoder Commit failed", e))?;
@@ -307,9 +400,16 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn save_png_wic_reports_missing_output_directory() {
+    fn save_image_wic_reports_missing_output_directory() {
         let img = tiny_image();
-        let err = save_png_wic(&img, "definitely-missing-dir-xyz/out.png", true).unwrap_err();
+        let err = save_image_wic(
+            &img,
+            "definitely-missing-dir-xyz/out.png",
+            true,
+            ImageFormat::Png,
+            0,
+        )
+        .unwrap_err();
         assert!(
             err.message.contains("output directory does not exist"),
             "unexpected error: {err:?}"
@@ -318,13 +418,14 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn save_png_wic_rejects_existing_directory_target() {
+    fn save_image_wic_rejects_existing_directory_target() {
         // The system temp dir always exists and is a directory. It must be
         // rejected with the directory-specific message for both overwrite modes.
         let dir = std::env::temp_dir();
         let dir_str = dir.to_string_lossy().into_owned();
         for overwrite in [true, false] {
-            let err = save_png_wic(&tiny_image(), &dir_str, overwrite).unwrap_err();
+            let err = save_image_wic(&tiny_image(), &dir_str, overwrite, ImageFormat::Png, 0)
+                .unwrap_err();
             assert!(
                 err.message.contains("output path is a directory"),
                 "overwrite={overwrite}: unexpected error: {err:?}"
@@ -334,15 +435,141 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn save_png_wic_writes_file_to_existing_directory() {
+    fn save_image_wic_writes_file_to_existing_directory() {
         let mut path = std::env::temp_dir();
         path.push(format!("screencap_savepng_{}.png", std::process::id()));
         let path_str = path.to_string_lossy().into_owned();
 
-        save_png_wic(&tiny_image(), &path_str, true).expect("save should succeed");
+        save_image_wic(&tiny_image(), &path_str, true, ImageFormat::Png, 0)
+            .expect("save should succeed");
         assert!(path.exists(), "expected {path:?} to exist");
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Deterministic pseudo-noise BGRA image so JPEG quality-vs-size assertions
+    /// are stable across runs. `row_pitch` may exceed `width * 4` to model a
+    /// padded capture buffer.
+    #[cfg(windows)]
+    fn noisy_image(width: i32, height: i32, row_pitch: i32) -> ImageBuffer {
+        let mut bgra = vec![0u8; (row_pitch * height) as usize];
+        let mut state: u32 = 0x1234_5678;
+        for row in 0..height {
+            let base = (row * row_pitch) as usize;
+            for col in 0..width {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let px = base + (col * 4) as usize;
+                bgra[px] = (state >> 16) as u8;
+                bgra[px + 1] = (state >> 8) as u8;
+                bgra[px + 2] = state as u8;
+                bgra[px + 3] = 255;
+            }
+        }
+        ImageBuffer {
+            width,
+            height,
+            row_pitch,
+            origin_x: 0,
+            origin_y: 0,
+            bgra,
+        }
+    }
+
+    #[cfg(windows)]
+    fn read_head(path: &std::path::Path, n: usize) -> Vec<u8> {
+        let bytes = std::fs::read(path).expect("output file should be readable");
+        bytes.into_iter().take(n).collect()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn save_image_wic_writes_jpeg_magic_bytes() {
+        let mut path = std::env::temp_dir();
+        path.push(format!("screencap_savejpg_{}.jpg", std::process::id()));
+        let path_str = path.to_string_lossy().into_owned();
+
+        save_image_wic(&tiny_image(), &path_str, true, ImageFormat::Jpg, 90)
+            .expect("jpg save should succeed");
+        assert_eq!(
+            read_head(&path, 3),
+            [0xFF, 0xD8, 0xFF],
+            "expected JPEG SOI magic"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn save_image_wic_writes_png_magic_bytes() {
+        let mut path = std::env::temp_dir();
+        path.push(format!("screencap_savepngmagic_{}.png", std::process::id()));
+        let path_str = path.to_string_lossy().into_owned();
+
+        save_image_wic(&tiny_image(), &path_str, true, ImageFormat::Png, 0)
+            .expect("png save should succeed");
+        assert_eq!(
+            read_head(&path, 4),
+            [0x89, 0x50, 0x4E, 0x47],
+            "expected PNG magic"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn save_image_wic_jpeg_handles_padded_row_pitch() {
+        // width * 4 = 12; use a stride of 32 so the buffer has trailing padding
+        // per row, exercising the CreateBitmapFromMemory stride handling.
+        let img = noisy_image(3, 4, 32);
+        let mut path = std::env::temp_dir();
+        path.push(format!("screencap_jpgpad_{}.jpg", std::process::id()));
+        let path_str = path.to_string_lossy().into_owned();
+
+        save_image_wic(&img, &path_str, true, ImageFormat::Jpg, 80)
+            .expect("padded jpg save should succeed");
+        assert_eq!(read_head(&path, 3), [0xFF, 0xD8, 0xFF]);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn save_image_wic_jpeg_quality_affects_size() {
+        let img = noisy_image(64, 64, 64 * 4);
+
+        let mut low_path = std::env::temp_dir();
+        low_path.push(format!("screencap_jpglow_{}.jpg", std::process::id()));
+        let mut high_path = std::env::temp_dir();
+        high_path.push(format!("screencap_jpghigh_{}.jpg", std::process::id()));
+
+        save_image_wic(
+            &img,
+            &low_path.to_string_lossy(),
+            true,
+            ImageFormat::Jpg,
+            10,
+        )
+        .expect("low-quality jpg save should succeed");
+        save_image_wic(
+            &img,
+            &high_path.to_string_lossy(),
+            true,
+            ImageFormat::Jpg,
+            95,
+        )
+        .expect("high-quality jpg save should succeed");
+
+        let low_len = std::fs::metadata(&low_path).unwrap().len();
+        let high_len = std::fs::metadata(&high_path).unwrap().len();
+        assert!(
+            low_len < high_len,
+            "low quality ({low_len}) should be smaller than high quality ({high_len})"
+        );
+
+        let _ = std::fs::remove_file(&low_path);
+        let _ = std::fs::remove_file(&high_path);
     }
 
     #[test]

@@ -30,3 +30,15 @@ ContentSize.
 
 See the original repo's `docs/capture-investigation.md` for the method
 comparison notes.
+
+## Output formats
+
+`cap` writes PNG by default. Select the format with `--format`:
+
+- `--format png` (default) — lossless, 32bpp BGRA with alpha.
+- `--format jpg` (alias `jpeg`) — lossy, alpha dropped to 24bpp BGR.
+
+For JPEG, `--quality <1-100>` sets the encode quality (default `90`);
+`--quality` is rejected with `--format png`. The GUI exposes a PNG/JPG
+combobox (the CLI default quality applies); the output-file extension follows
+the selected format.

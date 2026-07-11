@@ -19,7 +19,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use screencap_core::capture_wgc::capture_with_wgc;
 use screencap_core::crop::{crop_image_in_place, resolve_crop_rect_screen};
-use screencap_core::encode_png::save_png_wic;
+use screencap_core::encode_png::save_image_wic;
 use screencap_core::image_stats::compute_image_stats;
 use screencap_core::logging::{Logger, get_build_stamp, get_os_version_string};
 use screencap_core::monitor_enum::{enumerate_monitors, find_monitor_by_token};
@@ -397,7 +397,7 @@ fn build_cap_success_json(
         json!(cli::target_type_name(parsed.cap.target)),
     );
     js.insert("out_path".to_string(), json!(written_path));
-    js.insert("format".to_string(), json!("png"));
+    js.insert("format".to_string(), json!(parsed.cap.format.as_str()));
     js.insert("timestamp".to_string(), json!(iso8601_now_local()));
     js.insert("duration_ms".to_string(), json!(duration_ms));
     js.insert("dpi_mode".to_string(), json!(dpi_applied));
@@ -475,7 +475,13 @@ fn run_cap(parsed: &ParsedArgs, logger: &Logger, dpi_applied: &str) -> RunResult
             ),
         );
 
-        save_png_wic(&img, &parsed.cap.out_path, parsed.common.overwrite)?;
+        save_image_wic(
+            &img,
+            &parsed.cap.out_path,
+            parsed.common.overwrite,
+            parsed.cap.format,
+            parsed.cap.quality,
+        )?;
 
         // Windows volumes are case-insensitive, so writing `test.png` when
         // `TEST.png` already exists truncates and reuses `TEST.png` -- no
@@ -540,11 +546,13 @@ fn log_startup(logger: &Logger, parsed: Option<&ParsedArgs>, dpi_mode: &str) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_failure_json(
     command: &str,
     method: &str,
     target: &str,
     out_path: &str,
+    format: &str,
     dpi_mode: &str,
     duration_ms: i32,
     err: &ErrorInfo,
@@ -555,7 +563,7 @@ fn build_failure_json(
         "method": method,
         "target": target,
         "out_path": out_path,
-        "format": "png",
+        "format": format,
         "timestamp": iso8601_now_local(),
         "duration_ms": duration_ms,
         "dpi_mode": dpi_mode,
@@ -663,7 +671,7 @@ pub fn run() -> i32 {
                 let err = ErrorInfo::new(error, "ParseArgs");
                 println!(
                     "{}",
-                    build_failure_json("unknown", "", "", "", &dpi_applied, 0, &err)
+                    build_failure_json("unknown", "", "", "", "png", &dpi_applied, 0, &err)
                 );
             } else {
                 eprint!("{err}");
@@ -718,6 +726,7 @@ pub fn run() -> i32 {
                 &parsed.cap.method,
                 cli::target_type_name(parsed.cap.target),
                 &parsed.cap.out_path,
+                parsed.cap.format.as_str(),
                 &dpi_applied,
                 0,
                 &rr.err,
@@ -859,14 +868,23 @@ mod tests {
     #[test]
     fn build_failure_json_shape() {
         let err = ErrorInfo::new("boom", "SomeWhere");
-        let s = build_failure_json("cap", "wgc-window", "window", "out.png", "system", 12, &err);
+        let s = build_failure_json(
+            "cap",
+            "wgc-window",
+            "window",
+            "out.png",
+            "jpg",
+            "system",
+            12,
+            &err,
+        );
         let v: Value = serde_json::from_str(&s).unwrap();
         assert_eq!(v["ok"], json!(false));
         assert_eq!(v["command"], json!("cap"));
         assert_eq!(v["method"], json!("wgc-window"));
         assert_eq!(v["target"], json!("window"));
         assert_eq!(v["out_path"], json!("out.png"));
-        assert_eq!(v["format"], json!("png"));
+        assert_eq!(v["format"], json!("jpg"));
         assert_eq!(v["duration_ms"], json!(12));
         assert_eq!(v["dpi_mode"], json!("system"));
         assert_eq!(v["window"], Value::Null);

@@ -117,6 +117,9 @@ struct CapCli {
     #[arg(long, default_value = "png")]
     format: String,
 
+    #[arg(long, value_parser = clap::value_parser!(u8).range(1..=100))]
+    quality: Option<u8>,
+
     #[arg(long)]
     force_alpha: Option<i32>,
 
@@ -303,9 +306,22 @@ impl CapCli {
                 "--stdout is not supported in this version",
             ));
         }
-        if self.format != "png" {
-            return Err(validation_error("only --format png is supported"));
-        }
+        let format = ImageFormat::from_cli(&self.format).ok_or_else(|| {
+            validation_error(format!(
+                "unknown --format '{}' (supported: png, jpg)",
+                self.format
+            ))
+        })?;
+        // `--quality` is a JPEG-only knob; clap already constrained it to 1-100.
+        let quality = match (format, self.quality) {
+            (ImageFormat::Png, Some(_)) => {
+                return Err(validation_error(
+                    "--quality is only valid with --format jpg",
+                ));
+            }
+            (ImageFormat::Jpg, Some(q)) => q,
+            (_, None) => ImageFormat::DEFAULT_JPEG_QUALITY,
+        };
         if let Err(reason) = validate_output_path(&self.out_path) {
             return Err(validation_error(reason));
         }
@@ -398,6 +414,8 @@ impl CapCli {
             crop_rect,
             pad,
             force_alpha_255,
+            format,
+            quality,
         })
     }
 }
@@ -542,11 +560,56 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_png_format() {
+    fn format_defaults_to_png() {
+        let parsed = parse_args(&base_window_cap()).expect("default format should parse");
+        assert_eq!(parsed.cap.format, ImageFormat::Png);
+    }
+
+    #[test]
+    fn format_jpg_and_jpeg_map_to_jpg() {
+        for value in ["jpg", "jpeg"] {
+            let mut argv = base_window_cap();
+            argv.extend(args(&["--format", value]));
+            let parsed = parse_args(&argv).unwrap_or_else(|_| panic!("{value} should parse"));
+            assert_eq!(parsed.cap.format, ImageFormat::Jpg);
+            // Default JPEG quality is 90 when --quality is omitted.
+            assert_eq!(parsed.cap.quality, 90);
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_format() {
         let mut argv = base_window_cap();
-        argv.extend(args(&["--format", "jpg"]));
-        let err = parse_args(&argv).expect_err("non-png format should fail");
+        argv.extend(args(&["--format", "gif"]));
+        let err = parse_args(&argv).expect_err("unknown format should fail");
         assert_eq!(err.kind(), ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn quality_with_png_is_rejected() {
+        let mut argv = base_window_cap();
+        argv.extend(args(&["--quality", "80"]));
+        let err = parse_args(&argv).expect_err("--quality with png should fail");
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn quality_maps_for_jpg() {
+        let mut argv = base_window_cap();
+        argv.extend(args(&["--format", "jpg", "--quality", "60"]));
+        let parsed = parse_args(&argv).expect("jpg with quality should parse");
+        assert_eq!(parsed.cap.format, ImageFormat::Jpg);
+        assert_eq!(parsed.cap.quality, 60);
+    }
+
+    #[test]
+    fn quality_out_of_range_is_rejected() {
+        for value in ["0", "101"] {
+            let mut argv = base_window_cap();
+            argv.extend(args(&["--format", "jpg", "--quality", value]));
+            let err = parse_args(&argv).expect_err("quality out of range should fail");
+            assert_eq!(err.kind(), ErrorKind::ValueValidation);
+        }
     }
 
     #[test]

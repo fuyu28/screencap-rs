@@ -190,6 +190,23 @@ fn run_capture_loop(
         .FrameArrived(&handler)
         .map_err(|e| to_err(e, "CaptureWithWgc"))?;
 
+    // Always detach the handler before returning, including StartCapture
+    // failures: session/frame_pool Close still runs in the caller, but leaving
+    // the token registered is unnecessary work on that path.
+    struct FrameArrivedGuard<'a> {
+        pool: &'a Direct3D11CaptureFramePool,
+        token: i64,
+    }
+    impl Drop for FrameArrivedGuard<'_> {
+        fn drop(&mut self) {
+            let _ = self.pool.RemoveFrameArrived(self.token);
+        }
+    }
+    let _arrived_guard = FrameArrivedGuard {
+        pool: res.frame_pool,
+        token,
+    };
+
     res.session
         .StartCapture()
         .map_err(|e| to_err(e, "CaptureWithWgc"))?;
@@ -277,8 +294,6 @@ fn run_capture_loop(
             }
         }
     }
-
-    let _ = res.frame_pool.RemoveFrameArrived(token);
 
     match best {
         Some(img) => Ok(img),

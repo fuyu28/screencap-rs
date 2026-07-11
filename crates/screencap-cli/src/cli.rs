@@ -109,6 +109,9 @@ struct CapCli {
     #[arg(long)]
     monitor: Option<String>,
 
+    /// Rejected at parse time: WGC cannot capture the virtual desktop as a
+    /// single item. Kept as a flag so legacy invocations get a clear message
+    /// instead of an opaque runtime failure.
     #[arg(long)]
     virtual_screen: bool,
 
@@ -229,6 +232,7 @@ impl From<CropArg> for CropMode {
     }
 }
 
+/// Parses `f1`..`f24` into the corresponding virtual-key code.
 fn parse_function_key(token: &str) -> Option<u32> {
     let n = token.strip_prefix('f')?.parse::<i32>().ok()?;
     (1..=24)
@@ -236,6 +240,7 @@ fn parse_function_key(token: &str) -> Option<u32> {
         .then_some(VK_F1.0 as u32 + (n - 1) as u32)
 }
 
+/// Parses a `--hotkey` spec (`ctrl+shift+s`, `alt+f9`, …) into Win32 modifiers and VK.
 fn parse_hotkey(spec: &str) -> Option<(u32, u32)> {
     let mut mods: u32 = MOD_NOREPEAT.0;
     let mut vk: u32 = 0;
@@ -323,7 +328,6 @@ impl CapCli {
                 self.format
             ))
         })?;
-        // `--quality` is a JPEG-only knob; clap already constrained it to 1-100.
         let quality = match (format, self.quality) {
             (ImageFormat::Png, Some(_)) => {
                 return Err(validation_error(
@@ -371,6 +375,12 @@ impl CapCli {
         };
         let target = self.target.into();
 
+        if self.virtual_screen {
+            return Err(validation_error(
+                "--virtual-screen is not supported with Windows.Graphics.Capture; use --monitor <index|primary>",
+            ));
+        }
+
         if target == TargetType::Window {
             let has_window_target = window_query.hwnd.is_some()
                 || window_query.pid.is_some()
@@ -382,10 +392,8 @@ impl CapCli {
                     "window target needs one of --hwnd/--pid/--foreground/--title/--class",
                 ));
             }
-        } else if screen_query.monitor.is_none() && !screen_query.virtual_screen {
-            return Err(validation_error(
-                "screen target needs --monitor or --virtual-screen",
-            ));
+        } else if screen_query.monitor.is_none() {
+            return Err(validation_error("screen target needs --monitor"));
         }
 
         let force_alpha_255 = match self.force_alpha {
@@ -502,8 +510,6 @@ mod tests {
 
     #[test]
     fn parses_global_no_log_flag() {
-        // The flag's effect lives in run.rs's bootstrap parser; clap only
-        // needs to accept it.
         let mut argv = base_window_cap();
         argv.push("--no-log".to_string());
         parse_args(&argv).expect("--no-log should parse");
@@ -593,7 +599,6 @@ mod tests {
             argv.extend(args(&["--format", value]));
             let parsed = parse_args(&argv).unwrap_or_else(|_| panic!("{value} should parse"));
             assert_eq!(parsed.cap.format, ImageFormat::Jpg);
-            // Default JPEG quality is 90 when --quality is omitted.
             assert_eq!(parsed.cap.quality, 90);
         }
     }
@@ -728,9 +733,7 @@ mod tests {
         let parsed = parse_args(&argv).expect("valid hotkey should parse");
         assert!(parsed.cap.hotkey_enabled);
         assert_eq!(parsed.cap.hotkey_spec, "ctrl+shift+s");
-        // 'S' virtual key.
         assert_eq!(parsed.cap.hotkey_vk, b'S' as u32);
-        // Modifiers include control and shift bits (NOREPEAT is always set).
         let expected = MOD_NOREPEAT.0 | MOD_CONTROL.0 | MOD_SHIFT.0;
         assert_eq!(parsed.cap.hotkey_modifiers, expected);
     }
@@ -745,8 +748,6 @@ mod tests {
 
     #[test]
     fn hotkey_foreground_requires_hotkey() {
-        // --hotkey-foreground alone (no --hotkey) is rejected; use an explicit
-        // window target so we exercise the hotkey branch, not the target check.
         let argv = args(&[
             "screencap-cli",
             "cap",
@@ -781,7 +782,7 @@ mod tests {
     }
 
     #[test]
-    fn screen_target_requires_monitor_or_virtual() {
+    fn screen_target_requires_monitor() {
         let argv = args(&[
             "screencap-cli",
             "cap",
@@ -792,12 +793,12 @@ mod tests {
             "--out",
             "a.png",
         ]);
-        let err = parse_args(&argv).expect_err("screen target needs monitor/virtual");
+        let err = parse_args(&argv).expect_err("screen target needs --monitor");
         assert_eq!(err.kind(), ErrorKind::ValueValidation);
     }
 
     #[test]
-    fn virtual_screen_target_parses() {
+    fn virtual_screen_is_rejected() {
         let argv = args(&[
             "screencap-cli",
             "cap",
@@ -809,9 +810,13 @@ mod tests {
             "--out",
             "a.png",
         ]);
-        let parsed = parse_args(&argv).expect("virtual-screen should parse");
-        assert_eq!(parsed.cap.target, TargetType::Screen);
-        assert!(parsed.cap.screen_query.virtual_screen);
+        let err = parse_args(&argv).expect_err("--virtual-screen should be rejected");
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
+        assert!(
+            err.to_string()
+                .contains("--virtual-screen is not supported"),
+            "unexpected error: {err}"
+        );
     }
 
     /// Minimal valid `cap` argv with a caller-chosen `--out` value.
@@ -841,7 +846,6 @@ mod tests {
         assert_eq!(parsed.cap.out_path, "C:/tmp/a.png");
     }
 
-    // The no-file-name rejection relies on Windows `Path::file_name` semantics.
     #[cfg(windows)]
     #[test]
     fn rejects_out_path_with_no_file_name() {

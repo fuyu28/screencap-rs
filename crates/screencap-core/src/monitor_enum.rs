@@ -16,6 +16,8 @@ struct EnumState {
     next_index: i32,
 }
 
+/// `EnumDisplayMonitors` callback: appends one [`MonitorInfo`] per handle into
+/// the [`EnumState`] in `LPARAM`.
 extern "system" fn enum_monitors_proc(
     hmon: HMONITOR,
     _hdc: HDC,
@@ -68,6 +70,7 @@ pub fn enumerate_monitors() -> Vec<MonitorInfo> {
     state.list
 }
 
+/// Parses a decimal monitor index token; returns `None` for non-numeric input.
 fn parse_monitor_index(token: &str) -> Option<i32> {
     token.trim().parse::<i32>().ok()
 }

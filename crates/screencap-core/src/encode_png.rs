@@ -99,8 +99,8 @@ pub fn real_output_path(requested: &str) -> String {
     }
     let guard = HandleGuard(handle);
 
-    // GetFinalPathNameByHandleW returns the length without the NUL when the
-    // buffer fits, or the required length *with* the NUL when it does not.
+    // Do not assume a fixed buffer size: GetFinalPathNameByHandleW returns the
+    // required length (with NUL) when the first buffer is too small.
     let mut buf = vec![0u16; 512];
     for _ in 0..3 {
         let len = unsafe { GetFinalPathNameByHandleW(guard.0, &mut buf, FILE_NAME_NORMALIZED) };
@@ -182,18 +182,13 @@ pub fn save_image_wic(
     format: ImageFormat,
     quality: u8,
 ) -> Result<(), ErrorInfo> {
-    // `/` is a valid separator on Windows; normalize it so WIC's
-    // InitializeFromFilename (shell-based) reliably accepts the path instead of
-    // failing opaquely.
     let normalized = normalize_path_separators(out_path);
     let mut wide_path = wide_from_utf8(&normalized);
     wide_path.push(0);
     let wide_path = PCWSTR::from_raw(wide_path.as_ptr());
 
-    // A directory target would fail opaquely in WIC, so report it clearly. This
-    // is checked before the overwrite guard: the directory-specific message is
-    // strictly more accurate than "output exists" and applies regardless of the
-    // overwrite flag.
+    // Do not defer directory targets to WIC: the directory-specific error is
+    // clearer than "output exists" and applies regardless of overwrite.
     let attrs = unsafe { GetFileAttributesW(wide_path) };
     if attrs != INVALID_FILE_ATTRIBUTES {
         if (attrs & FILE_ATTRIBUTE_DIRECTORY.0) != 0 {
@@ -207,9 +202,8 @@ pub fn save_image_wic(
         }
     }
 
-    // WIC's InitializeFromFilename fails opaquely (ERROR_PATH_NOT_FOUND) when
-    // the parent directory is missing; check it up front and report a clear,
-    // specific error rather than creating the directory ourselves.
+    // Do not create missing parent directories here: WIC only reports
+    // ERROR_PATH_NOT_FOUND opaquely via InitializeFromFilename.
     if let Some(parent) = output_parent_dir(&normalized) {
         let mut wide_parent = wide_from_utf8(parent);
         wide_parent.push(0);
@@ -245,10 +239,8 @@ pub fn save_image_wic(
     unsafe { stream.InitializeFromFilename(wide_path, GENERIC_WRITE.0) }
         .map_err(|e| win_error("InitializeFromFilename failed", e))?;
 
-    // InitializeFromFilename already created/truncated the output file. If
-    // any later step fails, delete the partial file instead of leaving a
-    // 0-byte (or corrupt) file behind that would trip the overwrite guard on
-    // retry.
+    // Do not leave a partial file on encode failure: InitializeFromFilename
+    // already truncated the path and a 0-byte file would block retry without overwrite.
     let container = match format {
         ImageFormat::Png => &GUID_ContainerFormatPng,
         ImageFormat::Jpg => &GUID_ContainerFormatJpeg,
@@ -267,8 +259,7 @@ pub fn save_image_wic(
             .map_err(|e| win_error("CreateNewFrame failed", e))?;
         let frame = frame.ok_or_else(|| ErrorInfo::new("CreateNewFrame failed", WHERE))?;
 
-        // The JPEG quality option lives on the frame's property bag and must be
-        // written before Initialize consumes it.
+        // Do not set JPEG quality after frame Initialize: the property bag is consumed there.
         if format == ImageFormat::Jpg
             && let Some(props) = props.as_ref()
         {
@@ -295,10 +286,7 @@ pub fn save_image_wic(
                 unsafe { frame.SetPixelFormat(&mut fmt) }
                     .map_err(|e| win_error("SetPixelFormat failed", e))?;
 
-                // Wrap the BGRA buffer as a WIC bitmap (CreateBitmapFromMemory
-                // honors row_pitch, so padded rows are handled) and convert to
-                // 24bpp BGR through a format converter. WriteSource then drives
-                // the alpha-dropping conversion into the JPEG frame.
+                // Do not WritePixels 24bpp JPEG directly: convert BGRA via WIC so row_pitch padding is honored.
                 let source = unsafe {
                     factory.CreateBitmapFromMemory(
                         img.width as u32,
@@ -338,9 +326,8 @@ pub fn save_image_wic(
 
     let result = encode();
     if let Err(e) = result {
-        // The stream still holds the file open with GENERIC_WRITE (and no
-        // FILE_SHARE_DELETE), so it must be released before DeleteFileW can
-        // succeed.
+        // Do not DeleteFileW before dropping the stream: GENERIC_WRITE without
+        // FILE_SHARE_DELETE keeps the file locked.
         drop(stream);
         unsafe {
             let _ = DeleteFileW(wide_path);
@@ -419,8 +406,6 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn save_image_wic_rejects_existing_directory_target() {
-        // The system temp dir always exists and is a directory. It must be
-        // rejected with the directory-specific message for both overwrite modes.
         let dir = std::env::temp_dir();
         let dir_str = dir.to_string_lossy().into_owned();
         for overwrite in [true, false] {
@@ -520,8 +505,6 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn save_image_wic_jpeg_handles_padded_row_pitch() {
-        // width * 4 = 12; use a stride of 32 so the buffer has trailing padding
-        // per row, exercising the CreateBitmapFromMemory stride handling.
         let img = noisy_image(3, 4, 32);
         let mut path = std::env::temp_dir();
         path.push(format!("screencap_jpgpad_{}.jpg", std::process::id()));

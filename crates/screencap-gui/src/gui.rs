@@ -54,6 +54,7 @@ const ID_CAPTURE: u16 = 1006;
 const ID_STATUS: u16 = 1007;
 const ID_FORMAT: u16 = 1008;
 const ID_CURSOR: u16 = 1009;
+const ID_CROP: u16 = 1010;
 
 /// Posted from the capture worker thread to the GUI thread once
 /// screencap-cli.exe has finished (or failed to start). `WPARAM` is 1 for
@@ -63,6 +64,7 @@ const ID_CURSOR: u16 = 1009;
 const WM_APP_CAPTURE_DONE: u32 = WM_APP + 1;
 
 const METHODS: [&str; 1] = ["wgc-window"];
+const CROPS: [&str; 4] = ["none", "window", "client", "dwm-frame"];
 
 /// Per-window state. A pointer to this struct is stored in GWLP_USERDATA so the
 /// window procedure can recover its context.
@@ -73,6 +75,7 @@ struct GuiState {
     refresh: HWND,
     method: HWND,
     format: HWND,
+    crop: HWND,
     cursor: HWND,
     out: HWND,
     browse: HWND,
@@ -140,6 +143,7 @@ fn resize_controls(state: &GuiState) {
     let status_h = 22;
     let method_w = 150;
     let format_w = 90;
+    let crop_w = 110;
     let cursor_w = 130;
     let browse_w = 80;
     let capture_w = 92;
@@ -148,31 +152,16 @@ fn resize_controls(state: &GuiState) {
     let height = rc.bottom - rc.top;
 
     unsafe {
-        let _ = MoveWindow(state.refresh, pad, pad, refresh_w, button_h, true);
-        let _ = MoveWindow(
-            state.method,
-            pad + refresh_w + pad,
-            pad,
-            method_w,
-            180,
-            true,
-        );
-        let _ = MoveWindow(
-            state.format,
-            pad + refresh_w + pad + method_w + pad,
-            pad,
-            format_w,
-            180,
-            true,
-        );
-        let _ = MoveWindow(
-            state.cursor,
-            pad + refresh_w + pad + method_w + pad + format_w + pad,
-            pad,
-            cursor_w,
-            button_h,
-            true,
-        );
+        let mut x = pad;
+        let _ = MoveWindow(state.refresh, x, pad, refresh_w, button_h, true);
+        x += refresh_w + pad;
+        let _ = MoveWindow(state.method, x, pad, method_w, 180, true);
+        x += method_w + pad;
+        let _ = MoveWindow(state.format, x, pad, format_w, 180, true);
+        x += format_w + pad;
+        let _ = MoveWindow(state.crop, x, pad, crop_w, 180, true);
+        x += crop_w + pad;
+        let _ = MoveWindow(state.cursor, x, pad, cursor_w, button_h, true);
         let _ = MoveWindow(
             state.capture,
             width - pad - capture_w,
@@ -388,6 +377,10 @@ fn selected_format(state: &GuiState) -> ImageFormat {
     combo_selection(state.format, &ImageFormat::ALL)
 }
 
+fn selected_crop(state: &GuiState) -> &'static str {
+    combo_selection(state.crop, &CROPS)
+}
+
 /// Whether the "Include cursor" checkbox is currently checked.
 fn cursor_included(state: &GuiState) -> bool {
     let checked = unsafe { SendMessageW(state.cursor, BM_GETCHECK, None, None) };
@@ -453,6 +446,7 @@ fn run_capture_process(
     method: &str,
     out_path: &str,
     format: ImageFormat,
+    crop: &str,
     include_cursor: bool,
 ) -> Result<(), String> {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -484,6 +478,11 @@ fn run_capture_process(
     // minimal.
     if format != ImageFormat::default() {
         command.arg("--format").arg(format.as_str());
+    }
+
+    // Omit --crop when at the CLI default ("none").
+    if crop != "none" {
+        command.arg("--crop").arg(crop);
     }
 
     // Captures exclude the cursor by default; only pass --cursor when opted in.
@@ -582,6 +581,7 @@ fn capture_selected(state: &mut GuiState) {
     let window = state.windows[idx].clone();
     let method = selected_method(state);
     let format = selected_format(state);
+    let crop = selected_crop(state);
     let include_cursor = cursor_included(state);
 
     state.capturing = true;
@@ -598,7 +598,8 @@ fn capture_selected(state: &mut GuiState) {
     // thread boundary as an isize and rebuild the HWND on the other side.
     let hwnd_raw = state.hwnd.0 as isize;
     std::thread::spawn(move || {
-        let result = run_capture_process(&window, method, &out_path, format, include_cursor);
+        let result =
+            run_capture_process(&window, method, &out_path, format, crop, include_cursor);
         let (wparam, lparam): (usize, isize) = match result {
             Ok(()) => (1, 0),
             Err(err) => (0, Box::into_raw(Box::new(err)) as isize),
@@ -728,6 +729,7 @@ fn create_controls(state: &mut GuiState, hwnd: HWND) {
         ID_FORMAT,
         &ImageFormat::ALL.map(|f| f.as_str()),
     );
+    state.crop = create_combo(hwnd, instance, ID_CROP, &CROPS);
 
     // Unchecked by default: captures exclude the cursor unless the user opts in.
     state.cursor = create_child(

@@ -37,6 +37,9 @@ struct CommonCliOptions {
     #[arg(long, global = true, value_enum, default_value = "info")]
     log_level: LogLevelArg,
 
+    /// Disables file logging. Consumed by the pre-clap bootstrap in run.rs
+    /// (logging starts before clap parses); declared here so clap accepts the
+    /// flag and shows it in --help.
     #[arg(long, global = true)]
     no_log: bool,
 
@@ -170,7 +173,6 @@ impl From<CommonCliOptions> for CommonOptions {
         Self {
             log_dir: value.log_dir,
             log_level: value.log_level.into(),
-            no_log: value.no_log,
             json: value.json,
             timeout_ms: value.timeout_ms,
             retry: value.retry,
@@ -495,24 +497,11 @@ mod tests {
 
     #[test]
     fn parses_global_no_log_flag() {
-        let parsed = parse_args(&args(&[
-            "screencap-cli",
-            "cap",
-            "--method",
-            "wgc-window",
-            "--foreground",
-            "--out",
-            "a.png",
-            "--no-log",
-        ]))
-        .expect("--no-log should parse");
-        assert!(parsed.common.no_log);
-    }
-
-    #[test]
-    fn no_log_defaults_off() {
-        let parsed = parse_args(&base_window_cap()).expect("should parse");
-        assert!(!parsed.common.no_log);
+        // The flag's effect lives in run.rs's bootstrap parser; clap only
+        // needs to accept it.
+        let mut argv = base_window_cap();
+        argv.push("--no-log".to_string());
+        parse_args(&argv).expect("--no-log should parse");
     }
 
     #[test]

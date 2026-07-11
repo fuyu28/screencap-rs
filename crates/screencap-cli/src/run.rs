@@ -77,6 +77,11 @@ fn pre_parse_bootstrap(argv: &[String]) -> BootstrapOptions {
         if b.command == "list" && argc >= 3 {
             b.command = format!("list_{}", argv[2]);
         }
+        // Bare informational invocations (documented for embedders as
+        // side-effect-free) must not create ./logs.
+        if matches!(b.command.as_str(), "--version" | "-V" | "--help" | "-h") {
+            b.no_log = true;
+        }
     }
 
     let mut i = 1usize;
@@ -937,6 +942,74 @@ mod tests {
         assert!(v.get("timestamp").is_some());
         // error is a serialized ErrorInfo object.
         assert!(v.get("error").is_some());
+    }
+
+    /// Pins the success-JSON shape documented in README's Embedding section.
+    #[test]
+    fn build_cap_success_json_shape() {
+        let parsed = cli::parse_args(&argv(&[
+            "screencap-cli",
+            "cap",
+            "--method",
+            "wgc-window",
+            "--foreground",
+            "--out",
+            "a.png",
+        ]))
+        .expect("should parse");
+        let logger = Logger::new();
+        let ctx = CaptureContext {
+            cap: &parsed.cap,
+            common: &parsed.common,
+            window: Some(sample_window()),
+            monitor: None,
+            capture_rect_screen: Rect::default(),
+            logger: &logger,
+        };
+        let s = build_cap_success_json(
+            &parsed,
+            &ctx,
+            "C:\\shots\\a.png",
+            "per-monitor-v2",
+            42,
+            CropMode::None,
+            CropRect {
+                x: 0,
+                y: 0,
+                w: 10,
+                h: 10,
+            },
+            ImageStats::default(),
+        );
+        let v: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(v["ok"], json!(true));
+        assert_eq!(v["command"], json!("cap"));
+        assert_eq!(v["method"], json!("wgc-window"));
+        assert_eq!(v["target"], json!("window"));
+        assert_eq!(v["out_path"], json!("C:\\shots\\a.png"));
+        assert_eq!(v["format"], json!("png"));
+        assert_eq!(v["duration_ms"], json!(42));
+        assert_eq!(v["dpi_mode"], json!("per-monitor-v2"));
+        assert!(v.get("timestamp").is_some());
+        // window present (resolved), monitor absent (not resolved).
+        assert!(v.get("window").is_some());
+        assert!(v.get("monitor").is_none());
+        assert_eq!(v["crop"]["mode"], json!("none"));
+        assert!(v["crop"].get("rect").is_some());
+        assert!(v["crop"].get("pad").is_some());
+        assert!(v.get("image_stats").is_some());
+        assert_eq!(v["error"], Value::Null);
+    }
+
+    #[test]
+    fn pre_parse_bootstrap_bare_version_and_help_disable_logging() {
+        for flag in ["--version", "-V", "--help", "-h"] {
+            let b = pre_parse_bootstrap(&argv(&["screencap-cli", flag]));
+            assert!(b.no_log, "{flag} must not create ./logs");
+        }
+        // A subcommand's --help still logs (informational flag is not argv[1]).
+        let b = pre_parse_bootstrap(&argv(&["screencap-cli", "cap", "--help"]));
+        assert!(!b.no_log);
     }
 
     #[test]

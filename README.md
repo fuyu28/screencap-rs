@@ -65,7 +65,7 @@ screencap-cli.exe cap --method wgc-window --foreground \
 | code | meaning |
 | --- | --- |
 | `0` | capture succeeded |
-| `1` | capture / runtime failure (with `--json`, the failure JSON is on stdout) |
+| `1` | capture / runtime failure — for `cap`, the failure JSON is printed on stdout even without `--json` |
 | `2` | argument / validation error from the CLI parser (with `--json`, a failure-shaped JSON with `command: "unknown"` is on stdout; otherwise the clap message is on stderr) |
 
 ### Success JSON (`cap --json`, exit 0)
@@ -96,34 +96,19 @@ monitor was resolved. `rect`/`desktop`/`client_rect_screen` are
 
 ### Failure JSON (exit 1, or exit 2 with `--json`)
 
-```json
-{
-  "ok": false,
-  "command": "cap",
-  "method": "wgc-window",
-  "target": "window",
-  "out_path": "C:\\path\\shot.png",
-  "format": "png",
-  "timestamp": "2026-01-01T00:00:00+09:00",
-  "duration_ms": 0,
-  "dpi_mode": "per-monitor-v2",
-  "window": null,
-  "monitor": null,
-  "crop": null,
-  "image_stats": null,
-  "error": { "message": "...", "where": "...", "hresult": 2147942405, "win32_error": 5 }
-}
-```
-
-`error.hresult` and `error.win32_error` are present only when known.
+Same shape as the success JSON with `ok: false`; `window`/`monitor`/`crop`/
+`image_stats` are `null`, and `error` is
+`{ "message": "...", "where": "...", "hresult": ..., "win32_error": ... }`
+(`hresult`/`win32_error` present only when known).
 
 ### Version pinning
 
 Query the bundled build with `screencap-cli.exe --version` (prints
-`screencap-cli <version>`, exit 0) to pin/verify the CLI from the host app.
+`screencap-cli <version>`, exit 0, no filesystem side effects) to pin/verify
+the CLI from the host app.
 
 ### Runtime dependency
 
-From the next release, the CLI is built with a static CRT
-(`-C target-feature=+crt-static`), so it does not require the Visual C++
+Since v0.4.0, release binaries are built with a static CRT
+(`-C target-feature=+crt-static`), so they do not require the Visual C++
 runtime redistributable on the target machine.

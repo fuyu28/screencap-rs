@@ -335,6 +335,36 @@ fn resolve_capture_targets(
     Ok(())
 }
 
+/// Validates the requested capture method. Removed aliases get a targeted hint
+/// naming their replacement; other unsupported methods get the supported list.
+/// Pure (no capture side effects) so it is unit-testable without a WGC session.
+fn validate_capture_method(method: &str) -> Result<(), ErrorInfo> {
+    let removed_replacement = match method {
+        "wgc-window2" => Some("wgc-window"),
+        "wgc-monitor2" => Some("wgc-monitor"),
+        _ => None,
+    };
+    if let Some(replacement) = removed_replacement {
+        return Err(ErrorInfo::new(
+            format!(
+                "method '{}' was removed in v0.3.0; use '{}' instead",
+                method, replacement
+            ),
+            "RunCap",
+        ));
+    }
+    if !method.starts_with("wgc-") {
+        return Err(ErrorInfo::new(
+            format!(
+                "unknown method '{}' (supported: wgc-window, wgc-monitor)",
+                method
+            ),
+            "RunCap",
+        ));
+    }
+    Ok(())
+}
+
 /// Runs the WGC capture with retries. Non-WGC methods are rejected with a
 /// validation error listing the supported methods.
 fn capture_with_retry(
@@ -342,15 +372,7 @@ fn capture_with_retry(
     ctx: &CaptureContext,
     logger: &Logger,
 ) -> Result<ImageBuffer, ErrorInfo> {
-    if !parsed.cap.method.starts_with("wgc-") {
-        return Err(ErrorInfo::new(
-            format!(
-                "unknown method '{}' (supported: wgc-window, wgc-window2, wgc-monitor, wgc-monitor2)",
-                parsed.cap.method
-            ),
-            "RunCap",
-        ));
-    }
+    validate_capture_method(&parsed.cap.method)?;
 
     let mut capture_result: Result<ImageBuffer, ErrorInfo> = Err(ErrorInfo::default());
 
@@ -895,5 +917,38 @@ mod tests {
         assert!(v.get("timestamp").is_some());
         // error is a serialized ErrorInfo object.
         assert!(v.get("error").is_some());
+    }
+
+    #[test]
+    fn validate_capture_method_accepts_supported_methods() {
+        assert!(validate_capture_method("wgc-window").is_ok());
+        assert!(validate_capture_method("wgc-monitor").is_ok());
+    }
+
+    #[test]
+    fn validate_capture_method_rejects_removed_window_alias() {
+        let err = validate_capture_method("wgc-window2").unwrap_err();
+        assert_eq!(
+            err.message,
+            "method 'wgc-window2' was removed in v0.3.0; use 'wgc-window' instead"
+        );
+    }
+
+    #[test]
+    fn validate_capture_method_rejects_removed_monitor_alias() {
+        let err = validate_capture_method("wgc-monitor2").unwrap_err();
+        assert_eq!(
+            err.message,
+            "method 'wgc-monitor2' was removed in v0.3.0; use 'wgc-monitor' instead"
+        );
+    }
+
+    #[test]
+    fn validate_capture_method_rejects_unknown_method() {
+        let err = validate_capture_method("dxgi-window").unwrap_err();
+        assert_eq!(
+            err.message,
+            "unknown method 'dxgi-window' (supported: wgc-window, wgc-monitor)"
+        );
     }
 }

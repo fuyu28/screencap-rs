@@ -17,7 +17,8 @@ pub struct ParsedArgs {
 #[derive(Parser, Debug)]
 #[command(
     name = "screencap-cli",
-    about = "Windows screenshot comparison CLI",
+    about = "Windows screenshot CLI (Windows.Graphics.Capture)",
+    version,
     disable_help_subcommand = true
 )]
 struct CliArgs {
@@ -35,6 +36,9 @@ struct CommonCliOptions {
 
     #[arg(long, global = true, value_enum, default_value = "info")]
     log_level: LogLevelArg,
+
+    #[arg(long, global = true)]
+    no_log: bool,
 
     #[arg(long, global = true)]
     json: bool,
@@ -166,6 +170,7 @@ impl From<CommonCliOptions> for CommonOptions {
         Self {
             log_dir: value.log_dir,
             log_level: value.log_level.into(),
+            no_log: value.no_log,
             json: value.json,
             timeout_ms: value.timeout_ms,
             retry: value.retry,
@@ -486,6 +491,28 @@ mod tests {
 
         assert_eq!(parsed.command, CommandType::ListWindows);
         assert!(parsed.common.json);
+    }
+
+    #[test]
+    fn parses_global_no_log_flag() {
+        let parsed = parse_args(&args(&[
+            "screencap-cli",
+            "cap",
+            "--method",
+            "wgc-window",
+            "--foreground",
+            "--out",
+            "a.png",
+            "--no-log",
+        ]))
+        .expect("--no-log should parse");
+        assert!(parsed.common.no_log);
+    }
+
+    #[test]
+    fn no_log_defaults_off() {
+        let parsed = parse_args(&base_window_cap()).expect("should parse");
+        assert!(!parsed.common.no_log);
     }
 
     #[test]

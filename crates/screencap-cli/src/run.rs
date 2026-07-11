@@ -59,6 +59,7 @@ struct BootstrapOptions {
     log_level: LogLevel,
     command: String,
     json: bool,
+    no_log: bool,
 }
 
 fn pre_parse_bootstrap(argv: &[String]) -> BootstrapOptions {
@@ -67,6 +68,7 @@ fn pre_parse_bootstrap(argv: &[String]) -> BootstrapOptions {
         log_level: LogLevel::Info,
         command: "unknown".to_string(),
         json: false,
+        no_log: false,
     };
 
     let argc = argv.len();
@@ -90,6 +92,8 @@ fn pre_parse_bootstrap(argv: &[String]) -> BootstrapOptions {
             b.log_level = screencap_core::logging::parse_log_level(&argv[i]);
         } else if let Some(value) = a.strip_prefix("--log-level=") {
             b.log_level = screencap_core::logging::parse_log_level(value);
+        } else if a == "--no-log" {
+            b.no_log = true;
         } else if a == "--json" {
             b.json = true;
         }
@@ -670,7 +674,10 @@ pub fn run() -> i32 {
 
     let boot = pre_parse_bootstrap(&argv);
     let mut logger = Logger::new();
-    if let Err(err) = logger.init(&boot.log_dir, &boot.command, boot.log_level)
+    // A Logger with no file is a silent no-op, so skipping init disables file
+    // logging entirely (`--no-log`).
+    if !boot.no_log
+        && let Err(err) = logger.init(&boot.log_dir, &boot.command, boot.log_level)
         && !boot.json
     {
         eprintln!("Warning: failed to initialize logger: {err}");
@@ -851,6 +858,19 @@ mod tests {
         assert_eq!(b.log_level, LogLevel::Info);
         assert_eq!(b.command, "cap");
         assert!(!b.json);
+        assert!(!b.no_log);
+    }
+
+    #[test]
+    fn pre_parse_bootstrap_no_log_flag_present() {
+        let b = pre_parse_bootstrap(&argv(&["screencap", "cap", "--no-log"]));
+        assert!(b.no_log);
+    }
+
+    #[test]
+    fn pre_parse_bootstrap_no_log_flag_absent() {
+        let b = pre_parse_bootstrap(&argv(&["screencap", "cap"]));
+        assert!(!b.no_log);
     }
 
     #[test]

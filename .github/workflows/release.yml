@@ -25,6 +25,8 @@ jobs:
           ref: ${{ inputs.tag || github.ref_name }}
 
       - name: Build
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
         run: cargo build --release -p screencap-cli -p screencap-gui
 
       - name: Package
@@ -34,6 +36,9 @@ jobs:
           $bin = "target/x86_64-pc-windows-msvc/release"
           Compress-Archive -Path "$bin/screencap-cli.exe", "$bin/screencap.exe" -DestinationPath $zip
           echo "ZIP=$zip" >> $env:GITHUB_ENV
+          $cli = "screencap-cli-$env:TAG-windows-x86_64.exe"
+          Copy-Item "$bin/screencap-cli.exe" $cli
+          echo "CLI=$cli" >> $env:GITHUB_ENV
 
       - name: Upload to release
         shell: pwsh
@@ -41,4 +46,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view "$env:TAG" *> $null || gh release create "$env:TAG" --title "$env:TAG" --generate-notes
-          gh release upload "$env:TAG" "$env:ZIP" --clobber
+          gh release upload "$env:TAG" "$env:ZIP" "$env:CLI" --clobber

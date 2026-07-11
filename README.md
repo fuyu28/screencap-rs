@@ -50,8 +50,9 @@ The GUI exposes an "Include cursor" checkbox (unchecked by default) that maps
 to the same flag.
 
 > **Breaking change (v0.4.0):** earlier versions included the cursor. Captures
-> now omit it unless `--cursor` (or the GUI checkbox) is set. Setting the cursor
-> visibility requires Windows 10 version 2004 (build 19041) or later.
+> now omit it unless `--cursor` (or the GUI checkbox) is set. Cursor exclusion
+> requires Windows 10 version 1903 (build 18362) or later; `--cursor` works on
+> any WGC-capable build because it leaves the session at its default.
 
 ## Embedding
 

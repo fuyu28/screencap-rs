@@ -136,10 +136,8 @@ struct CapCli {
     #[arg(long)]
     hotkey_foreground: bool,
 
-    #[arg(
-        long,
-        help = "Include the mouse cursor in the capture (default: cursor excluded)"
-    )]
+    /// Include the mouse cursor in the capture (default: cursor excluded).
+    #[arg(long)]
     cursor: bool,
 }
 

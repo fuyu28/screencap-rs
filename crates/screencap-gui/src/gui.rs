@@ -390,8 +390,7 @@ fn selected_format(state: &GuiState) -> ImageFormat {
 
 /// Whether the "Include cursor" checkbox is currently checked.
 fn cursor_included(state: &GuiState) -> bool {
-    let checked =
-        unsafe { SendMessageW(state.cursor, BM_GETCHECK, Some(WPARAM(0)), Some(LPARAM(0))) };
+    let checked = unsafe { SendMessageW(state.cursor, BM_GETCHECK, None, None) };
     checked.0 == BST_CHECKED.0 as isize
 }
 

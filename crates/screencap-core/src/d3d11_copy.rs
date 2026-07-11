@@ -8,10 +8,7 @@ use windows::Win32::Graphics::Direct3D11::{
 
 use crate::types::{ErrorInfo, ImageBuffer, Rect};
 
-fn win_error(message: &str, where_: &str, e: windows::core::Error) -> ErrorInfo {
-    ErrorInfo::with_hresult(message, where_, e.code().0 as u32)
-}
-
+/// Creates a hardware D3D11 device and immediate context with BGRA support for WGC.
 pub fn create_d3d11_device(where_: &str) -> Result<(ID3D11Device, ID3D11DeviceContext), ErrorInfo> {
     let mut device: Option<ID3D11Device> = None;
     let mut context: Option<ID3D11DeviceContext> = None;
@@ -36,6 +33,11 @@ pub fn create_d3d11_device(where_: &str) -> Result<(ID3D11Device, ID3D11DeviceCo
     Ok((device, context))
 }
 
+fn win_error(message: &str, where_: &str, e: windows::core::Error) -> ErrorInfo {
+    ErrorInfo::with_hresult(message, where_, e.code().0 as u32)
+}
+
+/// RAII wrapper that maps a staging texture for CPU read and unmaps on drop.
 struct MappedTexture<'a> {
     context: &'a ID3D11DeviceContext,
     texture: &'a ID3D11Texture2D,
@@ -75,6 +77,8 @@ impl Drop for MappedTexture<'_> {
     }
 }
 
+/// Copies a GPU texture region into a tightly packed BGRA [`ImageBuffer`].
+/// `copy_to_staging` performs the GPU-side copy into a freshly created staging texture.
 pub(crate) fn copy_texture_to_image(
     device: &ID3D11Device,
     context: &ID3D11DeviceContext,

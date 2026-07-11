@@ -15,25 +15,26 @@ use windows::Win32::UI::Controls::Dialogs::{
     GetSaveFileNameW, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
 };
 use windows::Win32::UI::Controls::{
-    ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx, LVCF_TEXT, LVCF_WIDTH,
-    LVCOLUMNW, LVIF_PARAM, LVIF_TEXT, LVITEMW, LVM_DELETEALLITEMS, LVM_GETITEMW, LVM_GETNEXTITEM,
-    LVM_INSERTCOLUMNW, LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMTEXTW,
-    LVNI_SELECTED, LVS_EX_DOUBLEBUFFER, LVS_EX_FULLROWSELECT, LVS_EX_GRIDLINES, LVS_REPORT,
-    LVS_SHOWSELALWAYS, LVS_SINGLESEL, NM_DBLCLK, NMHDR, WC_LISTVIEWW,
+    BST_CHECKED, ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx, LVCF_TEXT,
+    LVCF_WIDTH, LVCOLUMNW, LVIF_PARAM, LVIF_TEXT, LVITEMW, LVM_DELETEALLITEMS, LVM_GETITEMW,
+    LVM_GETNEXTITEM, LVM_INSERTCOLUMNW, LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE,
+    LVM_SETITEMTEXTW, LVNI_SELECTED, LVS_EX_DOUBLEBUFFER, LVS_EX_FULLROWSELECT, LVS_EX_GRIDLINES,
+    LVS_REPORT, LVS_SHOWSELALWAYS, LVS_SINGLESEL, NM_DBLCLK, NMHDR, WC_LISTVIEWW,
 };
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, CBN_SELCHANGE, CBS_DROPDOWNLIST, CREATESTRUCTW,
-    CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, ES_AUTOHSCROLL, GA_ROOT,
-    GWLP_USERDATA, GetAncestor, GetClientRect, GetMessageW, GetWindowLongPtrW, HMENU, IDC_ARROW,
-    LoadCursorW, MB_ICONERROR, MB_ICONINFORMATION, MSG, MessageBoxW, MoveWindow, PostMessageW,
-    PostQuitMessage, RegisterClassW, SW_SHOW, SendMessageW, SetWindowLongPtrW, SetWindowTextW,
-    ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_COMMAND, WM_CREATE,
-    WM_DESTROY, WM_NCCREATE, WM_NOTIFY, WM_SIZE, WNDCLASSW, WS_CHILD, WS_EX_CLIENTEDGE,
-    WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    BM_GETCHECK, BS_AUTOCHECKBOX, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, CBN_SELCHANGE,
+    CBS_DROPDOWNLIST, CREATESTRUCTW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
+    DispatchMessageW, ES_AUTOHSCROLL, GA_ROOT, GWLP_USERDATA, GetAncestor, GetClientRect,
+    GetMessageW, GetWindowLongPtrW, HMENU, IDC_ARROW, LoadCursorW, MB_ICONERROR,
+    MB_ICONINFORMATION, MSG, MessageBoxW, MoveWindow, PostMessageW, PostQuitMessage,
+    RegisterClassW, SW_SHOW, SendMessageW, SetWindowLongPtrW, SetWindowTextW, ShowWindow,
+    TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_COMMAND, WM_CREATE, WM_DESTROY,
+    WM_NCCREATE, WM_NOTIFY, WM_SIZE, WNDCLASSW, WS_CHILD, WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW,
+    WS_VISIBLE,
 };
 use windows::core::{HSTRING, PCWSTR, PWSTR, w};
 
@@ -52,6 +53,7 @@ const ID_BROWSE: u16 = 1005;
 const ID_CAPTURE: u16 = 1006;
 const ID_STATUS: u16 = 1007;
 const ID_FORMAT: u16 = 1008;
+const ID_CURSOR: u16 = 1009;
 
 /// Posted from the capture worker thread to the GUI thread once
 /// screencap-cli.exe has finished (or failed to start). `WPARAM` is 1 for
@@ -71,6 +73,7 @@ struct GuiState {
     refresh: HWND,
     method: HWND,
     format: HWND,
+    cursor: HWND,
     out: HWND,
     browse: HWND,
     capture: HWND,
@@ -137,6 +140,7 @@ fn resize_controls(state: &GuiState) {
     let status_h = 22;
     let method_w = 150;
     let format_w = 90;
+    let cursor_w = 130;
     let browse_w = 80;
     let capture_w = 92;
     let refresh_w = 80;
@@ -159,6 +163,14 @@ fn resize_controls(state: &GuiState) {
             pad,
             format_w,
             180,
+            true,
+        );
+        let _ = MoveWindow(
+            state.cursor,
+            pad + refresh_w + pad + method_w + pad + format_w + pad,
+            pad,
+            cursor_w,
+            button_h,
             true,
         );
         let _ = MoveWindow(
@@ -376,6 +388,13 @@ fn selected_format(state: &GuiState) -> ImageFormat {
     combo_selection(state.format, &ImageFormat::ALL)
 }
 
+/// Whether the "Include cursor" checkbox is currently checked.
+fn cursor_included(state: &GuiState) -> bool {
+    let checked =
+        unsafe { SendMessageW(state.cursor, BM_GETCHECK, Some(WPARAM(0)), Some(LPARAM(0))) };
+    checked.0 == BST_CHECKED.0 as isize
+}
+
 /// Rewrites the output-path extension to match the selected format so the
 /// default timestamp filename tracks the format combobox.
 fn sync_output_extension(state: &GuiState) {
@@ -435,6 +454,7 @@ fn run_capture_process(
     method: &str,
     out_path: &str,
     format: ImageFormat,
+    include_cursor: bool,
 ) -> Result<(), String> {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -465,6 +485,11 @@ fn run_capture_process(
     // minimal.
     if format != ImageFormat::default() {
         command.arg("--format").arg(format.as_str());
+    }
+
+    // Captures exclude the cursor by default; only pass --cursor when opted in.
+    if include_cursor {
+        command.arg("--cursor");
     }
 
     let status = command.creation_flags(CREATE_NO_WINDOW).status();
@@ -558,6 +583,7 @@ fn capture_selected(state: &mut GuiState) {
     let window = state.windows[idx].clone();
     let method = selected_method(state);
     let format = selected_format(state);
+    let include_cursor = cursor_included(state);
 
     state.capturing = true;
     state.pending_out = out_path.clone();
@@ -573,7 +599,7 @@ fn capture_selected(state: &mut GuiState) {
     // thread boundary as an isize and rebuild the HWND on the other side.
     let hwnd_raw = state.hwnd.0 as isize;
     std::thread::spawn(move || {
-        let result = run_capture_process(&window, method, &out_path, format);
+        let result = run_capture_process(&window, method, &out_path, format, include_cursor);
         let (wparam, lparam): (usize, isize) = match result {
             Ok(()) => (1, 0),
             Err(err) => (0, Box::into_raw(Box::new(err)) as isize),
@@ -702,6 +728,17 @@ fn create_controls(state: &mut GuiState, hwnd: HWND) {
         instance,
         ID_FORMAT,
         &ImageFormat::ALL.map(|f| f.as_str()),
+    );
+
+    // Unchecked by default: captures exclude the cursor unless the user opts in.
+    state.cursor = create_child(
+        hwnd,
+        instance,
+        Default::default(),
+        w!("BUTTON"),
+        w!("Include cursor"),
+        WS_CHILD | WS_VISIBLE | WINDOW_STYLE(BS_AUTOCHECKBOX as u32),
+        ID_CURSOR,
     );
 
     state.out = create_child(

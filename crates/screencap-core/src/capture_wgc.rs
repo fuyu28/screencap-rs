@@ -338,6 +338,21 @@ pub fn capture_with_wgc(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> 
         .CreateCaptureSession(&item)
         .map_err(|e| to_err(e, "CaptureWithWgc"))?;
 
+    // Set the cursor visibility explicitly for both values so behavior never
+    // depends on WGC's default. IsCursorCaptureEnabled exists since Windows 10
+    // version 2004 (build 19041); older systems return an error here. Both
+    // session and frame_pool exist at this point, so close them before
+    // propagating the failure, same as the capture-loop paths below.
+    if let Err(e) = session.SetIsCursorCaptureEnabled(ctx.cap.include_cursor) {
+        let _ = session.Close();
+        let _ = frame_pool.Close();
+        return Err(to_err_with(
+            "SetIsCursorCaptureEnabled failed (requires Windows 10 version 2004 / build 19041 or later)",
+            "CaptureWithWgc",
+            &e,
+        ));
+    }
+
     // From here on, session/frame_pool exist, so we always close them before
     // returning -- whatever run_capture_loop produces (Ok or Err) is
     // returned only after cleanup runs.

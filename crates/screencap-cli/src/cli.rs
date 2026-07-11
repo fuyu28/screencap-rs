@@ -135,6 +135,12 @@ struct CapCli {
 
     #[arg(long)]
     hotkey_foreground: bool,
+
+    #[arg(
+        long,
+        help = "Include the mouse cursor in the capture (default: cursor excluded)"
+    )]
+    cursor: bool,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -423,6 +429,7 @@ impl CapCli {
             force_alpha_255,
             format,
             quality,
+            include_cursor: self.cursor,
         })
     }
 }
@@ -634,6 +641,20 @@ mod tests {
         argv.push("--stdout".to_string());
         let err = parse_args(&argv).expect_err("--stdout should be unsupported");
         assert_eq!(err.kind(), ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn cursor_defaults_to_excluded() {
+        let parsed = parse_args(&base_window_cap()).expect("default should parse");
+        assert!(!parsed.cap.include_cursor);
+    }
+
+    #[test]
+    fn cursor_flag_includes_cursor() {
+        let mut argv = base_window_cap();
+        argv.push("--cursor".to_string());
+        let parsed = parse_args(&argv).expect("--cursor should parse");
+        assert!(parsed.cap.include_cursor);
     }
 
     #[test]

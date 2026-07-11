@@ -292,6 +292,9 @@ pub struct CapOptions {
     pub format: ImageFormat,
     /// JPEG quality (1-100); ignored for PNG.
     pub quality: u8,
+    /// Include the mouse cursor in the capture. Defaults to false, so captures
+    /// exclude the cursor unless explicitly asked for.
+    pub include_cursor: bool,
 }
 
 impl Default for CapOptions {
@@ -312,6 +315,7 @@ impl Default for CapOptions {
             force_alpha_255: false,
             format: ImageFormat::default(),
             quality: ImageFormat::DEFAULT_JPEG_QUALITY,
+            include_cursor: false,
         }
     }
 }

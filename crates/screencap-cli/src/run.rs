@@ -344,34 +344,26 @@ fn resolve_capture_targets(
     Ok(())
 }
 
-/// Validates the requested capture method. Removed aliases get a targeted hint
-/// naming their replacement; other unsupported methods get the supported list.
-/// Pure (no capture side effects) so it is unit-testable without a WGC session.
+/// Validates the requested capture method. Only `wgc-window` and `wgc-monitor`
+/// are accepted. Removed aliases get a targeted hint naming their replacement;
+/// other unsupported methods get the supported list. Pure (no capture side
+/// effects) so it is unit-testable without a WGC session.
 fn validate_capture_method(method: &str) -> Result<(), ErrorInfo> {
-    let removed_replacement = match method {
-        "wgc-window2" => Some("wgc-window"),
-        "wgc-monitor2" => Some("wgc-monitor"),
-        _ => None,
-    };
-    if let Some(replacement) = removed_replacement {
-        return Err(ErrorInfo::new(
-            format!(
-                "method '{}' was removed in v0.3.0; use '{}' instead",
-                method, replacement
-            ),
+    match method {
+        "wgc-window" | "wgc-monitor" => Ok(()),
+        "wgc-window2" => Err(ErrorInfo::new(
+            "method 'wgc-window2' was removed in v0.3.0; use 'wgc-window' instead",
             "RunCap",
-        ));
-    }
-    if !method.starts_with("wgc-") {
-        return Err(ErrorInfo::new(
-            format!(
-                "unknown method '{}' (supported: wgc-window, wgc-monitor)",
-                method
-            ),
+        )),
+        "wgc-monitor2" => Err(ErrorInfo::new(
+            "method 'wgc-monitor2' was removed in v0.3.0; use 'wgc-monitor' instead",
             "RunCap",
-        ));
+        )),
+        _ => Err(ErrorInfo::new(
+            format!("unknown method '{method}' (supported: wgc-window, wgc-monitor)"),
+            "RunCap",
+        )),
     }
-    Ok(())
 }
 
 /// Runs the WGC capture with retries. Non-WGC methods are rejected with a
@@ -1042,6 +1034,18 @@ mod tests {
         assert_eq!(
             err.message,
             "unknown method 'dxgi-window' (supported: wgc-window, wgc-monitor)"
+        );
+    }
+
+    #[test]
+    fn validate_capture_method_rejects_unknown_wgc_prefix() {
+        // A `wgc-` prefix alone is not enough; only the two supported methods
+        // pass. Rejecting here (rather than later in CaptureWithWgc) keeps the
+        // error message consistent with the documented allowlist.
+        let err = validate_capture_method("wgc-foo").unwrap_err();
+        assert_eq!(
+            err.message,
+            "unknown method 'wgc-foo' (supported: wgc-window, wgc-monitor)"
         );
     }
 }

@@ -1,8 +1,7 @@
 //! Windows.Graphics.Capture implementation.
-//! Methods: wgc-window / wgc-window2 (window target), wgc-monitor /
-//! wgc-monitor2 (monitor target). Crops to frame ContentSize, retries up to 5
-//! frames until one passes the usable-frame heuristic
-//! (transparent_ratio < 0.98 && black_ratio < 0.98).
+//! Methods: wgc-window (window target), wgc-monitor (monitor target). Crops to
+//! frame ContentSize, retries up to 5 frames until one passes the usable-frame
+//! heuristic (transparent_ratio < 0.98 && black_ratio < 0.98).
 
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -150,7 +149,7 @@ fn copy_frame_to_image(
 }
 
 fn is_wgc_window_method(method: &str) -> bool {
-    method == "wgc-window" || method == "wgc-window2"
+    method == "wgc-window"
 }
 
 fn is_probably_usable_frame(img: &ImageBuffer) -> bool {
@@ -316,7 +315,7 @@ pub fn capture_with_wgc(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> 
                 ErrorInfo::new("wgc-window needs window target", "CaptureWithWgc")
             })?;
             create_capture_item_from_hwnd(HWND(window.hwnd as *mut core::ffi::c_void))?
-        } else if ctx.cap.method == "wgc-monitor" || ctx.cap.method == "wgc-monitor2" {
+        } else if ctx.cap.method == "wgc-monitor" {
             let monitor = ctx.monitor.as_ref().ok_or_else(|| {
                 ErrorInfo::new("wgc-monitor needs monitor target", "CaptureWithWgc")
             })?;
@@ -383,12 +382,12 @@ mod tests {
     #[test]
     fn wgc_window_methods_recognised() {
         assert!(is_wgc_window_method("wgc-window"));
-        assert!(is_wgc_window_method("wgc-window2"));
     }
 
     #[test]
     fn non_window_methods_rejected() {
         assert!(!is_wgc_window_method("wgc-monitor"));
+        assert!(!is_wgc_window_method("wgc-window2"));
         assert!(!is_wgc_window_method("wgc-monitor2"));
         assert!(!is_wgc_window_method("dxgi-window"));
         assert!(!is_wgc_window_method(""));

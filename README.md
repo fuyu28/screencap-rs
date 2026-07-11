@@ -22,8 +22,8 @@ Binaries land in `target/x86_64-pc-windows-msvc/release/`
 
 ## Capture methods
 
-- `wgc-window`, `wgc-window2` (window capture)
-- `wgc-monitor`, `wgc-monitor2` (monitor capture)
+- `wgc-window` (window capture)
+- `wgc-monitor` (monitor capture)
 
 All methods use Windows.Graphics.Capture and are cropped to the frame's
 ContentSize.

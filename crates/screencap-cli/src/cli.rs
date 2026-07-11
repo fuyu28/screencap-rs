@@ -232,6 +232,7 @@ impl From<CropArg> for CropMode {
     }
 }
 
+/// Parses `f1`..`f24` into the corresponding virtual-key code.
 fn parse_function_key(token: &str) -> Option<u32> {
     let n = token.strip_prefix('f')?.parse::<i32>().ok()?;
     (1..=24)
@@ -239,6 +240,7 @@ fn parse_function_key(token: &str) -> Option<u32> {
         .then_some(VK_F1.0 as u32 + (n - 1) as u32)
 }
 
+/// Parses a `--hotkey` spec (`ctrl+shift+s`, `alt+f9`, …) into Win32 modifiers and VK.
 fn parse_hotkey(spec: &str) -> Option<(u32, u32)> {
     let mut mods: u32 = MOD_NOREPEAT.0;
     let mut vk: u32 = 0;
@@ -326,7 +328,6 @@ impl CapCli {
                 self.format
             ))
         })?;
-        // `--quality` is a JPEG-only knob; clap already constrained it to 1-100.
         let quality = match (format, self.quality) {
             (ImageFormat::Png, Some(_)) => {
                 return Err(validation_error(
@@ -374,9 +375,6 @@ impl CapCli {
         };
         let target = self.target.into();
 
-        // WGC creates a capture item per window or per monitor; there is no
-        // virtual-desktop item, so accepting this flag only led to a later
-        // "wgc-monitor needs monitor target" failure.
         if self.virtual_screen {
             return Err(validation_error(
                 "--virtual-screen is not supported with Windows.Graphics.Capture; use --monitor <index|primary>",
@@ -512,8 +510,6 @@ mod tests {
 
     #[test]
     fn parses_global_no_log_flag() {
-        // The flag's effect lives in run.rs's bootstrap parser; clap only
-        // needs to accept it.
         let mut argv = base_window_cap();
         argv.push("--no-log".to_string());
         parse_args(&argv).expect("--no-log should parse");
@@ -603,7 +599,6 @@ mod tests {
             argv.extend(args(&["--format", value]));
             let parsed = parse_args(&argv).unwrap_or_else(|_| panic!("{value} should parse"));
             assert_eq!(parsed.cap.format, ImageFormat::Jpg);
-            // Default JPEG quality is 90 when --quality is omitted.
             assert_eq!(parsed.cap.quality, 90);
         }
     }
@@ -738,9 +733,7 @@ mod tests {
         let parsed = parse_args(&argv).expect("valid hotkey should parse");
         assert!(parsed.cap.hotkey_enabled);
         assert_eq!(parsed.cap.hotkey_spec, "ctrl+shift+s");
-        // 'S' virtual key.
         assert_eq!(parsed.cap.hotkey_vk, b'S' as u32);
-        // Modifiers include control and shift bits (NOREPEAT is always set).
         let expected = MOD_NOREPEAT.0 | MOD_CONTROL.0 | MOD_SHIFT.0;
         assert_eq!(parsed.cap.hotkey_modifiers, expected);
     }
@@ -755,8 +748,6 @@ mod tests {
 
     #[test]
     fn hotkey_foreground_requires_hotkey() {
-        // --hotkey-foreground alone (no --hotkey) is rejected; use an explicit
-        // window target so we exercise the hotkey branch, not the target check.
         let argv = args(&[
             "screencap-cli",
             "cap",
@@ -855,7 +846,6 @@ mod tests {
         assert_eq!(parsed.cap.out_path, "C:/tmp/a.png");
     }
 
-    // The no-file-name rejection relies on Windows `Path::file_name` semantics.
     #[cfg(windows)]
     #[test]
     fn rejects_out_path_with_no_file_name() {

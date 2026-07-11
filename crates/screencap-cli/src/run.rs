@@ -59,6 +59,9 @@ struct BootstrapOptions {
     no_log: bool,
 }
 
+/// Scans `argv` for global flags before clap runs so logging can start early.
+/// Mirrors the subset of flags that [`crate::cli::parse_args`] also accepts
+/// (`--log-dir`, `--log-level`, `--json`, `--no-log`).
 fn pre_parse_bootstrap(argv: &[String]) -> BootstrapOptions {
     let mut b = BootstrapOptions {
         log_dir: "./logs".to_string(),
@@ -74,8 +77,6 @@ fn pre_parse_bootstrap(argv: &[String]) -> BootstrapOptions {
         if b.command == "list" && argc >= 3 {
             b.command = format!("list_{}", argv[2]);
         }
-        // Bare informational invocations (documented for embedders as
-        // side-effect-free) must not create ./logs.
         if matches!(b.command.as_str(), "--version" | "-V" | "--help" | "-h") {
             b.no_log = true;
         }
@@ -167,6 +168,7 @@ fn monitor_json(m: &MonitorInfo, include_name: bool) -> Value {
     v
 }
 
+/// Handles `list windows`: enumerates targets and fills `RunResult` (text or JSON).
 fn run_list_windows(parsed: &ParsedArgs) -> RunResult {
     let mut rr = RunResult::default();
     let ws = enumerate_windows();
@@ -203,6 +205,7 @@ fn run_list_windows(parsed: &ParsedArgs) -> RunResult {
     rr
 }
 
+/// Handles `list monitors`: enumerates displays and fills `RunResult` (text or JSON).
 fn run_list_monitors(parsed: &ParsedArgs) -> RunResult {
     let mut rr = RunResult::default();
     let ms = enumerate_monitors();
@@ -329,6 +332,8 @@ fn resolve_capture_targets(
 /// other unsupported methods get the supported list. Pure (no capture side
 /// effects) so it is unit-testable without a WGC session.
 fn validate_capture_method(method: &str) -> Result<(), ErrorInfo> {
+    // Do not defer unknown methods to CaptureWithWgc: rejection here keeps the
+    // error aligned with the documented allowlist (see AGENTS.md).
     match method {
         "wgc-window" | "wgc-monitor" => Ok(()),
         "wgc-window2" => Err(ErrorInfo::new(
@@ -434,6 +439,8 @@ fn force_alpha_opaque(img: &mut ImageBuffer) {
         return;
     }
     let row_len = (img.width as usize) * 4;
+    // Do not walk the flat bgra buffer with chunks_exact_mut(4): row_pitch padding
+    // between rows must stay untouched.
     for y in 0..img.height {
         let row_start = (y as usize) * (img.row_pitch as usize);
         let row = &mut img.bgra[row_start..row_start + row_len];
@@ -443,6 +450,8 @@ fn force_alpha_opaque(img: &mut ImageBuffer) {
     }
 }
 
+/// Executes a full `cap`: resolve target, capture with retries, optional crop,
+/// encode to `--out`, and build success JSON when requested.
 fn run_cap(parsed: &ParsedArgs, logger: &Logger, dpi_applied: &str) -> RunResult {
     let mut rr = RunResult::default();
     let start = Instant::now();
@@ -500,10 +509,6 @@ fn run_cap(parsed: &ParsedArgs, logger: &Logger, dpi_applied: &str) -> RunResult
             parsed.cap.quality,
         )?;
 
-        // Windows volumes are case-insensitive, so writing `test.png` when
-        // `TEST.png` already exists truncates and reuses `TEST.png` -- no
-        // `test.png` is created. Resolve the real on-disk path so the reported
-        // success points at the file that actually exists.
         let written_path = screencap_core::encode_png::real_output_path(&parsed.cap.out_path);
 
         let duration_ms = start.elapsed().as_millis() as i32;
@@ -553,6 +558,7 @@ fn run_cap(parsed: &ParsedArgs, logger: &Logger, dpi_applied: &str) -> RunResult
     rr
 }
 
+/// Logs version, build stamp, OS, DPI mode, and raw argv at startup.
 fn log_startup(logger: &Logger, parsed: Option<&ParsedArgs>, dpi_mode: &str) {
     logger.log(LogLevel::Info, &format!("version={VERSION}"));
     logger.log(LogLevel::Info, &format!("build={}", get_build_stamp()));
@@ -563,6 +569,7 @@ fn log_startup(logger: &Logger, parsed: Option<&ParsedArgs>, dpi_mode: &str) {
     }
 }
 
+/// Builds the embedding failure JSON (`ok: false`) with null window/monitor/crop/stats.
 #[allow(clippy::too_many_arguments)]
 fn build_failure_json(
     command: &str,
@@ -593,6 +600,7 @@ fn build_failure_json(
     .to_string()
 }
 
+/// Blocks until the registered global hotkey fires or the message loop ends.
 fn wait_for_hotkey(parsed: &ParsedArgs, logger: &Logger) -> Result<(), ErrorInfo> {
     if !parsed.cap.hotkey_enabled {
         return Ok(());
@@ -665,8 +673,6 @@ pub fn run() -> i32 {
 
     let boot = pre_parse_bootstrap(&argv);
     let mut logger = Logger::new();
-    // A Logger with no file is a silent no-op, so skipping init disables file
-    // logging entirely (`--no-log`).
     if !boot.no_log
         && let Err(err) = logger.init(&boot.log_dir, &boot.command, boot.log_level)
         && !boot.json
@@ -818,7 +824,6 @@ mod tests {
     fn window_json_list_variant_omits_client_rect() {
         let v = window_json(&sample_window(), false);
         assert!(v.get("client_rect_screen").is_none());
-        // hwnd is serialized as a u64, never negative.
         assert_eq!(v["hwnd"], json!(0x1234u64));
     }
 
@@ -924,9 +929,7 @@ mod tests {
         assert_eq!(v["monitor"], Value::Null);
         assert_eq!(v["crop"], Value::Null);
         assert_eq!(v["image_stats"], Value::Null);
-        // timestamp comes from a now-time call; just assert its presence.
         assert!(v.get("timestamp").is_some());
-        // error is a serialized ErrorInfo object.
         assert!(v.get("error").is_some());
     }
 
@@ -977,7 +980,6 @@ mod tests {
         assert_eq!(v["duration_ms"], json!(42));
         assert_eq!(v["dpi_mode"], json!("per-monitor-v2"));
         assert!(v.get("timestamp").is_some());
-        // window present (resolved), monitor absent (not resolved).
         assert!(v.get("window").is_some());
         assert!(v.get("monitor").is_none());
         assert_eq!(v["crop"]["mode"], json!("none"));
@@ -993,7 +995,6 @@ mod tests {
             let b = pre_parse_bootstrap(&argv(&["screencap-cli", flag]));
             assert!(b.no_log, "{flag} must not create ./logs");
         }
-        // A subcommand's --help still logs (informational flag is not argv[1]).
         let b = pre_parse_bootstrap(&argv(&["screencap-cli", "cap", "--help"]));
         assert!(!b.no_log);
     }
@@ -1033,9 +1034,6 @@ mod tests {
 
     #[test]
     fn validate_capture_method_rejects_unknown_wgc_prefix() {
-        // A `wgc-` prefix alone is not enough; only the two supported methods
-        // pass. Rejecting here (rather than later in CaptureWithWgc) keeps the
-        // error message consistent with the documented allowlist.
         let err = validate_capture_method("wgc-foo").unwrap_err();
         assert_eq!(
             err.message,
@@ -1045,7 +1043,6 @@ mod tests {
 
     #[test]
     fn force_alpha_opaque_respects_row_pitch_padding() {
-        // 2x2 image with 8 padding bytes per row; padding must stay intact.
         let width = 2;
         let height = 2;
         let row_pitch = width * 4 + 8;

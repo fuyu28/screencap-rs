@@ -446,6 +446,16 @@ fn cli_exe_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("screencap-cli.exe"))
 }
 
+/// Pulls `error.message` out of a `cap --json` failure payload when present.
+fn extract_cli_error_message(stdout: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(stdout.trim()).ok()?;
+    value
+        .get("error")?
+        .get("message")?
+        .as_str()
+        .map(str::to_string)
+}
+
 /// Shell out to screencap-cli.exe with `CREATE_NO_WINDOW` so no console flashes
 /// up.
 fn run_capture_process(
@@ -475,6 +485,7 @@ fn run_capture_process(
         .arg(out_path)
         .arg("--overwrite")
         .arg("--json")
+        .arg("--no-log")
         .arg("--timeout-ms")
         .arg("2000")
         .arg("--force-alpha")
@@ -491,14 +502,20 @@ fn run_capture_process(
         command.arg("--cursor");
     }
 
-    let status = command.creation_flags(CREATE_NO_WINDOW).status();
+    let output = command.creation_flags(CREATE_NO_WINDOW).output();
 
-    match status {
-        Ok(status) if status.success() => Ok(()),
-        Ok(status) => Err(format!(
-            "Capture failed. Exit code: {}",
-            status.code().unwrap_or(1)
-        )),
+    match output {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let message = extract_cli_error_message(&stdout).unwrap_or_else(|| {
+                format!(
+                    "Capture failed. Exit code: {}",
+                    output.status.code().unwrap_or(1)
+                )
+            });
+            Err(message)
+        }
         Err(e) => Err(format!("Failed to start screencap-cli.exe: {e}")),
     }
 }
@@ -937,5 +954,25 @@ pub fn run_gui() -> i32 {
             DispatchMessageW(&msg);
         }
         msg.wParam.0 as i32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_cli_error_message;
+
+    #[test]
+    fn extract_cli_error_message_reads_failure_json() {
+        let stdout = r#"{"ok":false,"error":{"message":"output exists (use --overwrite)","where":"SavePngWic"}}"#;
+        assert_eq!(
+            extract_cli_error_message(stdout).as_deref(),
+            Some("output exists (use --overwrite)")
+        );
+    }
+
+    #[test]
+    fn extract_cli_error_message_ignores_non_json() {
+        assert!(extract_cli_error_message("not json").is_none());
+        assert!(extract_cli_error_message(r#"{"ok":true}"#).is_none());
     }
 }

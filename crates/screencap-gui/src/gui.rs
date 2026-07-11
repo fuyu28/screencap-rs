@@ -117,6 +117,7 @@ fn set_status(state: &GuiState, text: &str) {
     set_window_text(state.status, text);
 }
 
+/// Default output path under the current directory using the selected format extension.
 fn default_output_path() -> String {
     let filename = format!(
         "screenshot_{}.{}",
@@ -260,6 +261,7 @@ fn set_item_text(list: HWND, item: i32, sub_item: i32, text: &str) {
     }
 }
 
+/// Returns true for visible, unminimized, uncloaked top-level windows with a title.
 fn is_pickable(w: &WindowInfo) -> bool {
     if !w.visible || w.iconic || w.cloaked || w.title.is_empty() {
         return false;
@@ -272,6 +274,7 @@ fn is_pickable(w: &WindowInfo) -> bool {
     root == hwnd
 }
 
+/// Repopulates the ListView from [`enumerate_windows`], keeping only pickable entries.
 fn refresh_windows(state: &mut GuiState) {
     unsafe {
         SendMessageW(
@@ -366,8 +369,6 @@ fn browse_output(state: &mut GuiState) {
             .unwrap_or(file_buf.len());
         let path = utf8_from_wide(&file_buf[..end]);
         set_window_text(state.out, &path);
-        // The user may have picked the All-files filter or typed a mismatched
-        // extension; keep the extension in step with the format combobox.
         sync_output_extension(state);
     }
 }
@@ -395,7 +396,8 @@ fn cursor_included(state: &GuiState) -> bool {
 }
 
 /// Rewrites the output-path extension to match the selected format so the
-/// default timestamp filename tracks the format combobox.
+/// default timestamp filename tracks the format combobox. Called after Browse
+/// because the save dialog may leave a mismatched extension.
 fn sync_output_extension(state: &GuiState) {
     let current = get_window_text_utf8(state.out);
     if current.is_empty() {
@@ -439,6 +441,7 @@ fn selected_window_index(state: &GuiState) -> Option<usize> {
     Some(lv.lParam.0 as usize)
 }
 
+/// Resolves `screencap-cli.exe` next to the running GUI executable.
 fn cli_exe_path() -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_default();
     exe.parent()
@@ -491,13 +494,12 @@ fn run_capture_process(
         .arg("--force-alpha")
         .arg("255");
 
-    // Omit --format for the CLI-default format to keep the command line
-    // minimal.
+    // Do not pass --format when it matches the CLI default; keeps argv minimal.
     if format != ImageFormat::default() {
         command.arg("--format").arg(format.as_str());
     }
 
-    // Captures exclude the cursor by default; only pass --cursor when opted in.
+    // Do not pass --cursor unless opted in; CLI excludes the cursor by default.
     if include_cursor {
         command.arg("--cursor");
     }
@@ -526,9 +528,6 @@ fn run_capture_process(
 /// [`wnd_proc`]'s handler for that message.
 fn capture_selected(state: &mut GuiState) {
     if state.capturing {
-        // A capture is already in flight; ignore the request (the Capture
-        // button is disabled too, but double-click on the list can still
-        // reach here).
         return;
     }
 
@@ -560,9 +559,8 @@ fn capture_selected(state: &mut GuiState) {
         return;
     }
 
-    // Reject clearly-invalid paths up front with a clear message, rather than
-    // letting the capture backend fail opaquely. `/` is a valid separator and
-    // passes this check.
+    // Do not defer invalid paths to the CLI: surface a clear dialog here instead
+    // of an opaque exit code. `/` is valid on Windows and passes validate_output_path.
     if let Err(reason) = validate_output_path(&out_path) {
         unsafe {
             MessageBoxW(
@@ -575,10 +573,9 @@ fn capture_selected(state: &mut GuiState) {
         return;
     }
 
-    // The capture backend refuses to create missing directories, so a bad
-    // parent path would otherwise fail with just an exit code. Check it here
-    // and report clearly. Normalize first so `/` behaves like the backend.
     let normalized_out = normalize_path_separators(&out_path);
+    // Do not rely on the CLI alone for a missing parent directory; check here
+    // after the same separator normalization the backend uses.
     if let Some(parent) = output_parent_dir(&normalized_out)
         && !std::fs::metadata(parent)
             .map(|m| m.is_dir())
@@ -611,8 +608,7 @@ fn capture_selected(state: &mut GuiState) {
         let _ = UpdateWindow(state.hwnd);
     }
 
-    // HWND wraps a raw pointer and is not Send; carry the bits across the
-    // thread boundary as an isize and rebuild the HWND on the other side.
+    // HWND is not Send; carry raw bits and rebuild on the worker thread.
     let hwnd_raw = state.hwnd.0 as isize;
     std::thread::spawn(move || {
         let result = run_capture_process(&window, method, &out_path, format, include_cursor);
@@ -621,8 +617,7 @@ fn capture_selected(state: &mut GuiState) {
             Err(err) => (0, Box::into_raw(Box::new(err)) as isize),
         };
         let hwnd = HWND(hwnd_raw as *mut c_void);
-        // PostMessageW is safe to call from a non-UI thread; the wndproc on
-        // the GUI thread will pick this up on its next GetMessageW loop.
+        // Do not block the UI thread on CLI I/O; PostMessageW defers completion to wnd_proc.
         let _ = unsafe {
             PostMessageW(
                 Some(hwnd),
@@ -644,15 +639,11 @@ fn on_capture_done(state: &mut GuiState, wparam: WPARAM, lparam: LPARAM) {
     }
 
     if wparam.0 == 1 {
-        // Report the real on-disk path: on case-insensitive volumes a request
-        // for `test.png` may have landed in an existing `TEST.png`, and the
-        // status must name the file that actually exists.
         let real = real_output_path(&state.pending_out);
         set_status(state, &format!("Saved: {real}"));
         return;
     }
 
-    // Reclaim the boxed error string handed off by the worker thread.
     let err = *unsafe { Box::from_raw(lparam.0 as *mut String) };
     set_status(state, &err);
     unsafe {
@@ -722,6 +713,7 @@ fn create_combo(parent: HWND, instance: HINSTANCE, id: u16, items: &[&str]) -> H
     combo
 }
 
+/// Creates all child controls and performs the initial window list refresh.
 fn create_controls(state: &mut GuiState, hwnd: HWND) {
     state.hwnd = hwnd;
     let instance = unsafe { GetModuleHandleW(PCWSTR::null()) }
@@ -746,7 +738,6 @@ fn create_controls(state: &mut GuiState, hwnd: HWND) {
         &ImageFormat::ALL.map(|f| f.as_str()),
     );
 
-    // Unchecked by default: captures exclude the cursor unless the user opts in.
     state.cursor = create_child(
         hwnd,
         instance,

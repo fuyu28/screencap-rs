@@ -427,6 +427,22 @@ fn build_cap_success_json(
     Value::Object(js).to_string()
 }
 
+/// Sets every pixel's alpha channel to 255, respecting `row_pitch` so padding
+/// bytes between rows are left untouched.
+fn force_alpha_opaque(img: &mut ImageBuffer) {
+    if img.width <= 0 || img.height <= 0 {
+        return;
+    }
+    let row_len = (img.width as usize) * 4;
+    for y in 0..img.height {
+        let row_start = (y as usize) * (img.row_pitch as usize);
+        let row = &mut img.bgra[row_start..row_start + row_len];
+        for px in row.chunks_exact_mut(4) {
+            px[3] = 255;
+        }
+    }
+}
+
 fn run_cap(parsed: &ParsedArgs, logger: &Logger, dpi_applied: &str) -> RunResult {
     let mut rr = RunResult::default();
     let start = Instant::now();
@@ -446,9 +462,7 @@ fn run_cap(parsed: &ParsedArgs, logger: &Logger, dpi_applied: &str) -> RunResult
         let mut img = capture_with_retry(parsed, &ctx, logger)?;
 
         if parsed.cap.force_alpha_255 {
-            for px in img.bgra.chunks_exact_mut(4) {
-                px[3] = 255;
-            }
+            force_alpha_opaque(&mut img);
         }
 
         let img_rect = Rect {
@@ -1027,5 +1041,43 @@ mod tests {
             err.message,
             "unknown method 'wgc-foo' (supported: wgc-window, wgc-monitor)"
         );
+    }
+
+    #[test]
+    fn force_alpha_opaque_respects_row_pitch_padding() {
+        // 2x2 image with 8 padding bytes per row; padding must stay intact.
+        let width = 2;
+        let height = 2;
+        let row_pitch = width * 4 + 8;
+        let mut bgra = Vec::new();
+        for _ in 0..height {
+            for _ in 0..width {
+                bgra.extend_from_slice(&[10, 20, 30, 0]);
+            }
+            bgra.extend_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+        }
+        let mut img = ImageBuffer {
+            width,
+            height,
+            row_pitch,
+            origin_x: 0,
+            origin_y: 0,
+            bgra,
+        };
+
+        force_alpha_opaque(&mut img);
+
+        for y in 0..height {
+            let row_start = (y as usize) * (row_pitch as usize);
+            for x in 0..width {
+                let px = row_start + (x as usize) * 4;
+                assert_eq!(img.bgra[px + 3], 255, "pixel alpha should be opaque");
+            }
+            assert_eq!(
+                &img.bgra[row_start + 8..row_start + 16],
+                &[1, 2, 3, 4, 5, 6, 7, 8],
+                "row padding must not be rewritten"
+            );
+        }
     }
 }

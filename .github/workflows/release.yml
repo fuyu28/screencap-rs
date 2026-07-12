@@ -40,10 +40,36 @@ jobs:
           Copy-Item "$bin/screencap-cli.exe" $cli
           echo "CLI=$cli" >> $env:GITHUB_ENV
 
+      - name: Verify packaged --version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $cli = $env:CLI
+          $out = & ".\$cli" --version
+          if ($LASTEXITCODE -ne 0) { throw "packaged --version exit=$LASTEXITCODE" }
+          if ($out -notmatch '^screencap-cli\s+\d+\.\d+\.\d+') {
+            throw "unexpected packaged --version: $out"
+          }
+          Write-Host "packaged version: $out"
+
+      - name: SHA256 checksums
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $files = @($env:ZIP, $env:CLI)
+          $lines = foreach ($f in $files) {
+            $hash = (Get-FileHash -Algorithm SHA256 -Path $f).Hash.ToLowerInvariant()
+            "{0}  {1}" -f $hash, $f
+          }
+          $sum = "SHA256SUMS.txt"
+          $lines | Set-Content -Path $sum -Encoding ascii
+          Get-Content $sum
+          echo "SUMS=$sum" >> $env:GITHUB_ENV
+
       - name: Upload to release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view "$env:TAG" *> $null || gh release create "$env:TAG" --title "$env:TAG" --generate-notes
-          gh release upload "$env:TAG" "$env:ZIP" "$env:CLI" --clobber
+          gh release upload "$env:TAG" "$env:ZIP" "$env:CLI" "$env:SUMS" --clobber

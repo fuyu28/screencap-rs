@@ -80,3 +80,4 @@ jobs:
           }
 
           Write-Host "smoke ok"
+          exit 0

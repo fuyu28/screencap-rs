@@ -62,7 +62,9 @@ jobs:
             "{0}  {1}" -f $hash, $f
           }
           $sum = "SHA256SUMS.txt"
-          $lines | Set-Content -Path $sum -Encoding ascii
+          # LF only: Set-Content writes CRLF on Windows, which breaks `sha256sum -c` on Unix.
+          $text = ($lines -join "`n") + "`n"
+          [IO.File]::WriteAllText((Join-Path (Get-Location) $sum), $text)
           Get-Content $sum
           echo "SUMS=$sum" >> $env:GITHUB_ENV
 

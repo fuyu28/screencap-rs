@@ -10,6 +10,7 @@ members = [
 version = "0.4.0"
 edition = "2024"
 rust-version = "1.85"
+license = "MIT"
 
 [workspace.dependencies]
 windows = { version = "0.62", features = [

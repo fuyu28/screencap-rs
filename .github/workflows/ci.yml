@@ -62,13 +62,13 @@ jobs:
           if ($lmj.command -ne "list monitors") { throw "list monitors command=$($lmj.command)" }
           if ($null -eq $lmj.monitors) { throw "list monitors missing monitors array" }
 
-          # invalid args: exit 2 (clap / validation)
-          & $bin cap --method not-a-method --foreground --out smoke.png --no-log 2>$null | Out-Null
-          if ($LASTEXITCODE -ne 2) { throw "invalid method expected exit 2, got $LASTEXITCODE" }
+          # invalid args: exit 2 (parse-time validation; unknown --method is runtime exit 1)
+          & $bin cap --method wgc-window --foreground --format not-a-format --out smoke.png --no-log 2>$null | Out-Null
+          if ($LASTEXITCODE -ne 2) { throw "invalid format expected exit 2, got $LASTEXITCODE" }
 
           # --json + parse failure: exit 2 + failure-shaped JSON (command=unknown)
-          $fail = & $bin --json cap --method not-a-method --foreground --out smoke.png --no-log 2>$null | Out-String
-          if ($LASTEXITCODE -ne 2) { throw "--json invalid method expected exit 2, got $LASTEXITCODE`n$fail" }
+          $fail = & $bin --json cap --method wgc-window --foreground --format not-a-format --out smoke.png --no-log 2>$null | Out-String
+          if ($LASTEXITCODE -ne 2) { throw "--json invalid format expected exit 2, got $LASTEXITCODE`n$fail" }
           $fj = $fail | ConvertFrom-Json
           if ($fj.ok -ne $false) { throw "--json failure ok should be false: $fail" }
           if ($fj.command -ne "unknown") { throw "--json failure command=$($fj.command)" }

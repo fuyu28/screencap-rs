@@ -57,9 +57,8 @@ const ID_FORMAT: u16 = 1008;
 const ID_CURSOR: u16 = 1009;
 const ID_MONITOR: u16 = 1010;
 
-/// GUI target-type combo entries. Index maps 1:1 to [`TARGET_METHODS`].
+/// GUI target-type combo entries. Index maps 1:1 to the [`GuiTarget`] variants.
 const TARGET_LABELS: [&str; 2] = ["Window", "Monitor"];
-const TARGET_METHODS: [&str; 2] = ["wgc-window", "wgc-monitor"];
 
 /// Posted from the capture worker thread to the GUI thread once
 /// screencap-cli.exe has finished (or failed to start). `WPARAM` is 1 for
@@ -72,6 +71,22 @@ const WM_APP_CAPTURE_DONE: u32 = WM_APP + 1;
 enum GuiTarget {
     Window,
     Monitor,
+}
+
+/// Resolved capture target carried to the worker thread (both variants are `Send`).
+enum CaptureTarget {
+    Window(usize),
+    Monitor(i32),
+}
+
+impl CaptureTarget {
+    /// Returns the CLI `--method` allowlist string for this target.
+    fn method(&self) -> &'static str {
+        match self {
+            CaptureTarget::Window(_) => "wgc-window",
+            CaptureTarget::Monitor(_) => "wgc-monitor",
+        }
+    }
 }
 
 /// Per-window state. A pointer to this struct is stored in GWLP_USERDATA so the
@@ -128,6 +143,18 @@ fn set_window_text(hwnd: HWND, text: &str) {
 
 fn set_status(state: &GuiState, text: &str) {
     set_window_text(state.status, text);
+}
+
+/// Shows an informational message box owned by the GUI window.
+fn info_box(hwnd: HWND, text: &str) {
+    unsafe {
+        MessageBoxW(
+            Some(hwnd),
+            &HSTRING::from(text),
+            w!("screencap"),
+            MB_ICONINFORMATION,
+        );
+    }
 }
 
 /// Default output path under the current directory using the selected format extension.
@@ -351,8 +378,27 @@ fn monitor_label(m: &MonitorInfo) -> String {
     }
 }
 
+/// Picks the combobox row to select after a monitor refresh.
+/// Prefers the previously selected `monitor.index`; if that monitor is gone,
+/// falls back to primary, then row 0. Returns `None` when the list is empty.
+fn restore_monitor_selection(monitors: &[MonitorInfo], prev_index: Option<i32>) -> Option<usize> {
+    if monitors.is_empty() {
+        return None;
+    }
+    Some(
+        prev_index
+            .and_then(|idx| monitors.iter().position(|m| m.index == idx))
+            .or_else(|| monitors.iter().position(|m| m.primary))
+            .unwrap_or(0),
+    )
+}
+
 /// Repopulates the monitor combobox from [`enumerate_monitors`].
 fn refresh_monitors(state: &mut GuiState) {
+    // Capture before CB_RESETCONTENT / list replace so Refresh keeps the same
+    // monitor instead of silently snapping back to primary.
+    let prev_index = selected_monitor(state).map(|m| m.index);
+
     unsafe {
         SendMessageW(
             state.monitor,
@@ -378,13 +424,12 @@ fn refresh_monitors(state: &mut GuiState) {
         }
     }
 
-    if !state.monitors.is_empty() {
-        let primary = state.monitors.iter().position(|m| m.primary).unwrap_or(0);
+    if let Some(sel) = restore_monitor_selection(&state.monitors, prev_index) {
         unsafe {
             SendMessageW(
                 state.monitor,
                 CB_SETCURSEL,
-                Some(WPARAM(primary)),
+                Some(WPARAM(sel)),
                 Some(LPARAM(0)),
             );
         }
@@ -409,6 +454,14 @@ fn refresh_current_target(state: &mut GuiState) {
     match selected_target(state) {
         GuiTarget::Window => refresh_windows(state),
         GuiTarget::Monitor => refresh_monitors(state),
+    }
+}
+
+/// Updates the status line from the cached count for the current target type.
+fn update_target_status(state: &GuiState) {
+    match selected_target(state) {
+        GuiTarget::Window => set_status(state, &format!("Windows: {}", state.windows.len())),
+        GuiTarget::Monitor => set_status(state, &format!("Monitors: {}", state.monitors.len())),
     }
 }
 
@@ -472,20 +525,7 @@ fn combo_selection<T: Copy>(combo: HWND, items: &[T]) -> T {
 
 /// Returns the target-type combobox selection.
 fn selected_target(state: &GuiState) -> GuiTarget {
-    let idx = unsafe { SendMessageW(state.target, CB_GETCURSEL, None, None) }.0;
-    if idx == 1 {
-        GuiTarget::Monitor
-    } else {
-        GuiTarget::Window
-    }
-}
-
-/// Returns the CLI capture method for the current target type.
-fn selected_method(state: &GuiState) -> &'static str {
-    match selected_target(state) {
-        GuiTarget::Window => TARGET_METHODS[0],
-        GuiTarget::Monitor => TARGET_METHODS[1],
-    }
+    combo_selection(state.target, &[GuiTarget::Window, GuiTarget::Monitor])
 }
 
 /// Returns the monitor combobox selection, if any.
@@ -571,11 +611,9 @@ fn extract_cli_error_message(stdout: &str) -> Option<String> {
 }
 
 /// Shell out to screencap-cli.exe with `CREATE_NO_WINDOW` so no console flashes
-/// up. `monitor_index` is set for monitor captures (`--target screen`).
+/// up. `target` selects the `--target window` vs `--target screen` argv.
 fn run_capture_process(
-    method: &str,
-    hwnd: Option<usize>,
-    monitor_index: Option<i32>,
+    target: CaptureTarget,
     out_path: &str,
     format: ImageFormat,
     include_cursor: bool,
@@ -591,7 +629,7 @@ fn run_capture_process(
     command
         .arg("cap")
         .arg("--method")
-        .arg(method)
+        .arg(target.method())
         .arg("--out")
         .arg(out_path)
         .arg("--overwrite")
@@ -602,20 +640,21 @@ fn run_capture_process(
         .arg("--force-alpha")
         .arg("255");
 
-    if let Some(hwnd) = hwnd {
-        command
-            .arg("--target")
-            .arg("window")
-            .arg("--hwnd")
-            .arg(hwnd.to_string());
-    } else if let Some(index) = monitor_index {
-        command
-            .arg("--target")
-            .arg("screen")
-            .arg("--monitor")
-            .arg(index.to_string());
-    } else {
-        return Err("Capture target was not selected.".to_string());
+    match target {
+        CaptureTarget::Window(hwnd) => {
+            command
+                .arg("--target")
+                .arg("window")
+                .arg("--hwnd")
+                .arg(hwnd.to_string());
+        }
+        CaptureTarget::Monitor(index) => {
+            command
+                .arg("--target")
+                .arg("screen")
+                .arg("--monitor")
+                .arg(index.to_string());
+        }
     }
 
     // Do not pass --format when it matches the CLI default; keeps argv minimal.
@@ -655,65 +694,36 @@ fn capture_selected(state: &mut GuiState) {
         return;
     }
 
-    let target = selected_target(state);
-    let (hwnd, monitor_index) = match target {
+    let target = match selected_target(state) {
         GuiTarget::Window => {
             let idx = match selected_window_index(state) {
                 Some(idx) if idx < state.windows.len() => idx,
                 _ => {
-                    unsafe {
-                        MessageBoxW(
-                            Some(state.hwnd),
-                            w!("Select a window first."),
-                            w!("screencap"),
-                            MB_ICONINFORMATION,
-                        );
-                    }
+                    info_box(state.hwnd, "Select a window first.");
                     return;
                 }
             };
-            (Some(state.windows[idx].hwnd as usize), None)
+            CaptureTarget::Window(state.windows[idx].hwnd as usize)
         }
         GuiTarget::Monitor => {
             let Some(monitor) = selected_monitor(state) else {
-                unsafe {
-                    MessageBoxW(
-                        Some(state.hwnd),
-                        w!("Select a monitor first."),
-                        w!("screencap"),
-                        MB_ICONINFORMATION,
-                    );
-                }
+                info_box(state.hwnd, "Select a monitor first.");
                 return;
             };
-            (None, Some(monitor.index))
+            CaptureTarget::Monitor(monitor.index)
         }
     };
 
     let out_path = get_window_text_utf8(state.out);
     if out_path.is_empty() {
-        unsafe {
-            MessageBoxW(
-                Some(state.hwnd),
-                w!("Choose an output path first."),
-                w!("screencap"),
-                MB_ICONINFORMATION,
-            );
-        }
+        info_box(state.hwnd, "Choose an output path first.");
         return;
     }
 
     // Do not defer invalid paths to the CLI: surface a clear dialog here instead
     // of an opaque exit code. `/` is valid on Windows and passes validate_output_path.
     if let Err(reason) = validate_output_path(&out_path) {
-        unsafe {
-            MessageBoxW(
-                Some(state.hwnd),
-                &HSTRING::from(reason.as_str()),
-                w!("screencap"),
-                MB_ICONINFORMATION,
-            );
-        }
+        info_box(state.hwnd, &reason);
         return;
     }
 
@@ -725,19 +735,13 @@ fn capture_selected(state: &mut GuiState) {
             .map(|m| m.is_dir())
             .unwrap_or(false)
     {
-        let msg = format!("output directory does not exist: {parent}");
-        unsafe {
-            MessageBoxW(
-                Some(state.hwnd),
-                &HSTRING::from(msg.as_str()),
-                w!("screencap"),
-                MB_ICONINFORMATION,
-            );
-        }
+        info_box(
+            state.hwnd,
+            &format!("output directory does not exist: {parent}"),
+        );
         return;
     }
 
-    let method = selected_method(state);
     let format = selected_format(state);
     let include_cursor = cursor_included(state);
 
@@ -754,14 +758,7 @@ fn capture_selected(state: &mut GuiState) {
     // HWND is not Send; carry raw bits and rebuild on the worker thread.
     let hwnd_raw = state.hwnd.0 as isize;
     std::thread::spawn(move || {
-        let result = run_capture_process(
-            method,
-            hwnd,
-            monitor_index,
-            &out_path,
-            format,
-            include_cursor,
-        );
+        let result = run_capture_process(target, &out_path, format, include_cursor);
         let (wparam, lparam): (usize, isize) = match result {
             Ok(()) => (1, 0),
             Err(err) => (0, Box::into_raw(Box::new(err)) as isize),
@@ -1019,7 +1016,7 @@ unsafe extern "system" fn wnd_proc(
                     return LRESULT(0);
                 } else if id == ID_TARGET && code == CBN_SELCHANGE as u16 {
                     apply_target_ui(state);
-                    refresh_current_target(state);
+                    update_target_status(state);
                     return LRESULT(0);
                 } else if id == ID_FORMAT && code == CBN_SELCHANGE as u16 {
                     sync_output_extension(state);
@@ -1114,8 +1111,23 @@ pub fn run_gui() -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_cli_error_message, monitor_label};
+    use super::{extract_cli_error_message, monitor_label, restore_monitor_selection};
     use screencap_core::types::{MonitorInfo, Rect};
+
+    fn monitor(index: i32, primary: bool) -> MonitorInfo {
+        MonitorInfo {
+            hmon: index as isize,
+            index,
+            name: format!(r"\\.\DISPLAY{}", index + 1),
+            desktop: Rect {
+                left: index * 1920,
+                top: 0,
+                right: (index + 1) * 1920,
+                bottom: 1080,
+            },
+            primary,
+        }
+    }
 
     #[test]
     fn extract_cli_error_message_reads_failure_json() {
@@ -1134,35 +1146,30 @@ mod tests {
 
     #[test]
     fn monitor_label_includes_index_size_and_primary() {
-        let primary = MonitorInfo {
-            hmon: 1,
-            index: 0,
-            name: r"\\.\DISPLAY1".to_string(),
-            desktop: Rect {
-                left: 0,
-                top: 0,
-                right: 1920,
-                bottom: 1080,
-            },
-            primary: true,
-        };
+        let primary = monitor(0, true);
         assert_eq!(
             monitor_label(&primary),
             r"0: \\.\DISPLAY1 (1920x1080, primary)"
         );
 
-        let secondary = MonitorInfo {
-            hmon: 2,
-            index: 1,
-            name: r"\\.\DISPLAY2".to_string(),
-            desktop: Rect {
-                left: 1920,
-                top: 0,
-                right: 3840,
-                bottom: 1080,
-            },
-            primary: false,
-        };
+        let secondary = monitor(1, false);
         assert_eq!(monitor_label(&secondary), r"1: \\.\DISPLAY2 (1920x1080)");
+    }
+
+    #[test]
+    fn restore_monitor_selection_keeps_prev_index() {
+        let monitors = vec![monitor(0, true), monitor(1, false)];
+        assert_eq!(restore_monitor_selection(&monitors, Some(1)), Some(1));
+    }
+
+    #[test]
+    fn restore_monitor_selection_falls_back_to_primary_when_gone() {
+        let monitors = vec![monitor(0, false), monitor(2, true)];
+        assert_eq!(restore_monitor_selection(&monitors, Some(1)), Some(1));
+    }
+
+    #[test]
+    fn restore_monitor_selection_empty_list() {
+        assert_eq!(restore_monitor_selection(&[], Some(0)), None);
     }
 }

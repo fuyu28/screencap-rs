@@ -27,6 +27,11 @@ Binaries land in `target/x86_64-pc-windows-msvc/release/`
 (the default target is pinned in `.cargo/config.toml`, which also lets
 `cargo check` type-check on non-Windows hosts).
 
+## Release review
+
+Before a formal release, follow the [code reading guide](docs/release-code-reading.md)
+to re-read the stable CLI contract and the Windows-specific implementation boundaries.
+
 ## Capture methods
 
 - `wgc-window` (window capture)

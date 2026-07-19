@@ -1,6 +1,6 @@
-//! Win32 window-picker GUI. Lists capturable windows in a ListView, lets the
-//! user pick method/output path, and shells out to
-//! screencap-cli.exe (next to this exe) to do the actual capture.
+//! Win32 capture GUI. Lets the user pick a window or monitor (ListView),
+//! plus format/output path, and shells out to screencap-cli.exe (next to
+//! this exe) for the actual capture.
 
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -15,11 +15,12 @@ use windows::Win32::UI::Controls::Dialogs::{
     GetSaveFileNameW, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
 };
 use windows::Win32::UI::Controls::{
-    BST_CHECKED, ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx, LVCF_TEXT,
-    LVCF_WIDTH, LVCOLUMNW, LVIF_PARAM, LVIF_TEXT, LVITEMW, LVM_DELETEALLITEMS, LVM_GETITEMW,
+    BST_CHECKED, ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx,
+    LIST_VIEW_ITEM_STATE_FLAGS, LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW, LVIF_PARAM, LVIF_TEXT,
+    LVIS_FOCUSED, LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS, LVM_DELETECOLUMN, LVM_GETITEMW,
     LVM_GETNEXTITEM, LVM_INSERTCOLUMNW, LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE,
-    LVM_SETITEMTEXTW, LVNI_SELECTED, LVS_EX_DOUBLEBUFFER, LVS_EX_FULLROWSELECT, LVS_EX_GRIDLINES,
-    LVS_REPORT, LVS_SHOWSELALWAYS, LVS_SINGLESEL, NM_DBLCLK, NMHDR, WC_LISTVIEWW,
+    LVM_SETITEMSTATE, LVM_SETITEMTEXTW, LVNI_SELECTED, LVS_EX_DOUBLEBUFFER, LVS_EX_FULLROWSELECT,
+    LVS_EX_GRIDLINES, LVS_REPORT, LVS_SHOWSELALWAYS, LVS_SINGLESEL, NM_DBLCLK, NMHDR, WC_LISTVIEWW,
 };
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
@@ -39,7 +40,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{HSTRING, PCWSTR, PWSTR, w};
 
 use screencap_core::encode_png::{normalize_path_separators, output_parent_dir, real_output_path};
-use screencap_core::types::{ImageFormat, WindowInfo};
+use screencap_core::monitor_enum::enumerate_monitors;
+use screencap_core::types::{ImageFormat, MonitorInfo, Rect, WindowInfo};
 use screencap_core::util::{
     build_timestamp_for_filename, utf8_from_wide, validate_output_path, wide_from_utf8,
 };
@@ -47,13 +49,26 @@ use screencap_core::window_enum::{enumerate_windows, get_window_text_utf8};
 
 const ID_LIST: u16 = 1001;
 const ID_REFRESH: u16 = 1002;
-const ID_METHOD: u16 = 1003;
+const ID_TARGET: u16 = 1003;
 const ID_OUT: u16 = 1004;
 const ID_BROWSE: u16 = 1005;
 const ID_CAPTURE: u16 = 1006;
 const ID_STATUS: u16 = 1007;
 const ID_FORMAT: u16 = 1008;
 const ID_CURSOR: u16 = 1009;
+
+/// GUI target-type combo entries. Index maps 1:1 to the [`GuiTarget`] variants.
+const TARGET_LABELS: [&str; 2] = ["Window", "Monitor"];
+
+const WINDOW_COLUMNS: [(&str, i32); 4] =
+    [("Title", 360), ("Class", 170), ("PID", 80), ("Rect", 180)];
+const MONITOR_COLUMNS: [(&str, i32); 5] = [
+    ("Index", 60),
+    ("Name", 200),
+    ("Size", 120),
+    ("Primary", 80),
+    ("Rect", 200),
+];
 
 /// Posted from the capture worker thread to the GUI thread once
 /// screencap-cli.exe has finished (or failed to start). `WPARAM` is 1 for
@@ -62,7 +77,28 @@ const ID_CURSOR: u16 = 1009;
 /// text, which the handler reclaims with `Box::from_raw`.
 const WM_APP_CAPTURE_DONE: u32 = WM_APP + 1;
 
-const METHODS: [&str; 1] = ["wgc-window"];
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum GuiTarget {
+    #[default]
+    Window,
+    Monitor,
+}
+
+/// Resolved capture target carried to the worker thread (both variants are `Send`).
+enum CaptureTarget {
+    Window(usize),
+    Monitor(i32),
+}
+
+impl CaptureTarget {
+    /// Returns the CLI `--method` allowlist string for this target.
+    fn method(&self) -> &'static str {
+        match self {
+            CaptureTarget::Window(_) => "wgc-window",
+            CaptureTarget::Monitor(_) => "wgc-monitor",
+        }
+    }
+}
 
 /// Per-window state. A pointer to this struct is stored in GWLP_USERDATA so the
 /// window procedure can recover its context.
@@ -71,7 +107,7 @@ struct GuiState {
     hwnd: HWND,
     list: HWND,
     refresh: HWND,
-    method: HWND,
+    target: HWND,
     format: HWND,
     cursor: HWND,
     out: HWND,
@@ -79,6 +115,13 @@ struct GuiState {
     capture: HWND,
     status: HWND,
     windows: Vec<WindowInfo>,
+    monitors: Vec<MonitorInfo>,
+    /// Target type currently shown in the ListView (may lag the combo briefly
+    /// during `CBN_SELCHANGE` handling).
+    list_target: GuiTarget,
+    /// Last chosen monitor `index`, kept across Window/Monitor target switches
+    /// so returning to Monitor restores the same row (combo used to keep this).
+    preferred_monitor: Option<i32>,
     /// True while a capture worker thread is in flight; further capture
     /// requests are ignored until it completes.
     capturing: bool,
@@ -118,17 +161,45 @@ fn set_status(state: &GuiState, text: &str) {
     set_window_text(state.status, text);
 }
 
-/// Default output path under the current directory using the selected format extension.
-fn default_output_path() -> String {
+/// Shows an informational message box owned by the GUI window.
+fn info_box(hwnd: HWND, text: &str) {
+    unsafe {
+        MessageBoxW(
+            Some(hwnd),
+            &HSTRING::from(text),
+            w!("screencap"),
+            MB_ICONINFORMATION,
+        );
+    }
+}
+
+/// Builds `screenshot_<timestamp>.<ext>` under `dir` (or bare if `dir` is empty).
+fn output_path_in_dir(dir: &std::path::Path, format: ImageFormat) -> String {
     let filename = format!(
         "screenshot_{}.{}",
         build_timestamp_for_filename(),
-        ImageFormat::default().extension()
+        format.extension()
     );
-    match std::env::current_dir() {
-        Ok(cwd) => cwd.join(filename).to_string_lossy().into_owned(),
-        Err(_) => filename,
+    if dir.as_os_str().is_empty() {
+        filename
+    } else {
+        dir.join(filename).to_string_lossy().into_owned()
     }
+}
+
+/// Default output path under the current directory using the selected format extension.
+fn default_output_path() -> String {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    output_path_in_dir(&cwd, ImageFormat::default())
+}
+
+/// Same directory as `current`, with a fresh timestamp filename and `format` extension.
+fn next_output_path(current: &str, format: ImageFormat) -> String {
+    let parent = PathBuf::from(current)
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    output_path_in_dir(&parent, format)
 }
 
 /// Lays out child controls to fill the main window client area (`WM_SIZE`).
@@ -141,7 +212,7 @@ fn resize_controls(state: &GuiState) {
     let button_h = 28;
     let out_h = 24;
     let status_h = 22;
-    let method_w = 150;
+    let target_w = 110;
     let format_w = 90;
     let cursor_w = 130;
     let browse_w = 80;
@@ -153,16 +224,16 @@ fn resize_controls(state: &GuiState) {
     unsafe {
         let _ = MoveWindow(state.refresh, pad, pad, refresh_w, button_h, true);
         let _ = MoveWindow(
-            state.method,
+            state.target,
             pad + refresh_w + pad,
             pad,
-            method_w,
+            target_w,
             180,
             true,
         );
         let _ = MoveWindow(
             state.format,
-            pad + refresh_w + pad + method_w + pad,
+            pad + refresh_w + pad + target_w + pad,
             pad,
             format_w,
             180,
@@ -170,7 +241,7 @@ fn resize_controls(state: &GuiState) {
         );
         let _ = MoveWindow(
             state.cursor,
-            pad + refresh_w + pad + method_w + pad + format_w + pad,
+            pad + refresh_w + pad + target_w + pad + format_w + pad,
             pad,
             cursor_w,
             button_h,
@@ -203,14 +274,14 @@ fn resize_controls(state: &GuiState) {
             true,
         );
 
-        let list_y = out_y + out_h + pad;
-        let list_h = height - list_y - status_h - pad * 2;
+        let pick_y = out_y + out_h + pad;
+        let pick_h = height - pick_y - status_h - pad * 2;
         let _ = MoveWindow(
             state.list,
             pad,
-            list_y,
+            pick_y,
             width - pad * 2,
-            list_h.max(80),
+            pick_h.max(80),
             true,
         );
         let _ = MoveWindow(
@@ -224,9 +295,19 @@ fn resize_controls(state: &GuiState) {
     }
 }
 
-/// Adds the Title/Class/PID/Rect columns to the window ListView.
-fn init_list_columns(list: HWND) {
-    let columns: [(&str, i32); 4] = [("Title", 360), ("Class", 170), ("PID", 80), ("Rect", 180)];
+/// Removes every ListView column (needed before switching Window/Monitor schemas).
+fn clear_list_columns(list: HWND) {
+    loop {
+        let ok = unsafe { SendMessageW(list, LVM_DELETECOLUMN, Some(WPARAM(0)), Some(LPARAM(0))) };
+        if ok.0 == 0 {
+            break;
+        }
+    }
+}
+
+/// Replaces ListView columns with `columns` (clears existing columns first).
+fn set_list_columns(list: HWND, columns: &[(&str, i32)]) {
+    clear_list_columns(list);
     for (i, (text, width)) in columns.iter().enumerate() {
         let mut wtext = to_wide(text);
         let col = LVCOLUMNW {
@@ -265,6 +346,24 @@ fn set_item_text(list: HWND, item: i32, sub_item: i32, text: &str) {
     }
 }
 
+/// Selects and focuses a ListView row.
+fn select_list_item(list: HWND, item: i32) {
+    let flags = LIST_VIEW_ITEM_STATE_FLAGS(LVIS_SELECTED.0 | LVIS_FOCUSED.0);
+    let lv = LVITEMW {
+        state: flags,
+        stateMask: flags,
+        ..Default::default()
+    };
+    unsafe {
+        SendMessageW(
+            list,
+            LVM_SETITEMSTATE,
+            Some(WPARAM(item as usize)),
+            Some(LPARAM(&lv as *const LVITEMW as isize)),
+        );
+    }
+}
+
 /// Returns true for visible, unminimized, uncloaked top-level windows with a title.
 fn is_pickable(w: &WindowInfo) -> bool {
     if !w.visible || w.iconic || w.cloaked || w.title.is_empty() {
@@ -278,8 +377,19 @@ fn is_pickable(w: &WindowInfo) -> bool {
     root == hwnd
 }
 
-/// Repopulates the ListView from [`enumerate_windows`], keeping only pickable entries.
-fn refresh_windows(state: &mut GuiState) {
+/// Formats a rect for a ListView cell.
+fn format_rect(rect: &Rect) -> String {
+    format!(
+        "{},{} {}x{}",
+        rect.left,
+        rect.top,
+        rect.width(),
+        rect.height()
+    )
+}
+
+/// Clears ListView rows and inserts one row per cached window.
+fn populate_window_rows(state: &GuiState) {
     unsafe {
         SendMessageW(
             state.list,
@@ -288,13 +398,6 @@ fn refresh_windows(state: &mut GuiState) {
             Some(LPARAM(0)),
         );
     }
-
-    let mut pickable: Vec<WindowInfo> = enumerate_windows()
-        .into_iter()
-        .filter(is_pickable)
-        .collect();
-    pickable.sort_by(|a, b| a.title.cmp(&b.title));
-    state.windows = pickable;
 
     for (i, w) in state.windows.iter().enumerate() {
         let mut title_w = to_wide(&w.title);
@@ -315,17 +418,142 @@ fn refresh_windows(state: &mut GuiState) {
         }
         set_item_text(state.list, i as i32, 1, &w.class_name);
         set_item_text(state.list, i as i32, 2, &w.pid.to_string());
-        let rect = format!(
-            "{},{} {}x{}",
-            w.rect.left,
-            w.rect.top,
-            w.rect.width(),
-            w.rect.height()
+        set_item_text(state.list, i as i32, 3, &format_rect(&w.rect));
+    }
+}
+
+/// Clears ListView rows and inserts one row per cached monitor.
+fn populate_monitor_rows(state: &GuiState, select: Option<usize>) {
+    unsafe {
+        SendMessageW(
+            state.list,
+            LVM_DELETEALLITEMS,
+            Some(WPARAM(0)),
+            Some(LPARAM(0)),
         );
-        set_item_text(state.list, i as i32, 3, &rect);
     }
 
-    set_status(state, &format!("Windows: {}", state.windows.len()));
+    for (i, m) in state.monitors.iter().enumerate() {
+        let mut index_w = to_wide(&m.index.to_string());
+        let item = LVITEMW {
+            mask: LVIF_TEXT | LVIF_PARAM,
+            iItem: i as i32,
+            pszText: PWSTR(index_w.as_mut_ptr()),
+            lParam: LPARAM(i as isize),
+            ..Default::default()
+        };
+        unsafe {
+            SendMessageW(
+                state.list,
+                LVM_INSERTITEMW,
+                Some(WPARAM(0)),
+                Some(LPARAM(&item as *const LVITEMW as isize)),
+            );
+        }
+        set_item_text(state.list, i as i32, 1, &m.name);
+        set_item_text(
+            state.list,
+            i as i32,
+            2,
+            &format!("{}x{}", m.desktop.width(), m.desktop.height()),
+        );
+        set_item_text(state.list, i as i32, 3, if m.primary { "yes" } else { "" });
+        set_item_text(state.list, i as i32, 4, &format_rect(&m.desktop));
+    }
+
+    if let Some(sel) = select {
+        select_list_item(state.list, sel as i32);
+    }
+}
+
+/// Reconfigures ListView columns/rows for the current target type.
+fn populate_list(state: &mut GuiState) {
+    let target = selected_target(state);
+    match target {
+        GuiTarget::Window => {
+            set_list_columns(state.list, &WINDOW_COLUMNS);
+            populate_window_rows(state);
+        }
+        GuiTarget::Monitor => {
+            set_list_columns(state.list, &MONITOR_COLUMNS);
+            let sel = restore_monitor_selection(&state.monitors, state.preferred_monitor);
+            populate_monitor_rows(state, sel);
+            state.preferred_monitor = sel.and_then(|i| state.monitors.get(i).map(|m| m.index));
+        }
+    }
+    state.list_target = target;
+}
+
+/// Enumerates pickable windows into [`GuiState::windows`].
+fn reload_windows(state: &mut GuiState) {
+    let mut pickable: Vec<WindowInfo> = enumerate_windows()
+        .into_iter()
+        .filter(is_pickable)
+        .collect();
+    pickable.sort_by(|a, b| a.title.cmp(&b.title));
+    state.windows = pickable;
+}
+
+/// Picks the ListView row to select after a monitor refresh.
+/// Prefers the previously selected `monitor.index`; if that monitor is gone,
+/// falls back to primary, then row 0. Returns `None` when the list is empty.
+fn restore_monitor_selection(monitors: &[MonitorInfo], prev_index: Option<i32>) -> Option<usize> {
+    if monitors.is_empty() {
+        return None;
+    }
+    Some(
+        prev_index
+            .and_then(|idx| monitors.iter().position(|m| m.index == idx))
+            .or_else(|| monitors.iter().position(|m| m.primary))
+            .unwrap_or(0),
+    )
+}
+
+/// Enumerates monitors into [`GuiState::monitors`].
+fn reload_monitors(state: &mut GuiState) {
+    let mut monitors = enumerate_monitors();
+    monitors.sort_by_key(|m| m.index);
+    state.monitors = monitors;
+}
+
+/// Re-enumerates the current target type and rebuilds the ListView.
+fn refresh_current_target(state: &mut GuiState) {
+    match selected_target(state) {
+        GuiTarget::Window => {
+            reload_windows(state);
+            set_list_columns(state.list, &WINDOW_COLUMNS);
+            populate_window_rows(state);
+            set_status(state, &format!("Windows: {}", state.windows.len()));
+        }
+        GuiTarget::Monitor => {
+            // Capture before list replace so Refresh keeps the same monitor
+            // instead of silently snapping back to primary.
+            let prev_index = selected_monitor_index(state).or(state.preferred_monitor);
+            reload_monitors(state);
+            set_list_columns(state.list, &MONITOR_COLUMNS);
+            let sel = restore_monitor_selection(&state.monitors, prev_index);
+            populate_monitor_rows(state, sel);
+            state.preferred_monitor = sel.and_then(|i| state.monitors.get(i).map(|m| m.index));
+            set_status(state, &format!("Monitors: {}", state.monitors.len()));
+        }
+    }
+}
+
+/// Remembers the ListView monitor selection before swapping to Window columns.
+fn remember_monitor_selection(state: &mut GuiState) {
+    if state.list_target == GuiTarget::Monitor
+        && let Some(index) = selected_monitor_index(state)
+    {
+        state.preferred_monitor = Some(index);
+    }
+}
+
+/// Updates the status line from the cached count for the current target type.
+fn update_target_status(state: &GuiState) {
+    match selected_target(state) {
+        GuiTarget::Window => set_status(state, &format!("Windows: {}", state.windows.len())),
+        GuiTarget::Monitor => set_status(state, &format!("Monitors: {}", state.monitors.len())),
+    }
 }
 
 /// Builds the Save-dialog filter for the selected format, keeping the
@@ -386,9 +614,9 @@ fn combo_selection<T: Copy>(combo: HWND, items: &[T]) -> T {
     items.get(idx).copied().unwrap_or(items[0])
 }
 
-/// Returns the capture-method combobox selection (`wgc-window` today).
-fn selected_method(state: &GuiState) -> &'static str {
-    combo_selection(state.method, &METHODS)
+/// Returns the target-type combobox selection.
+fn selected_target(state: &GuiState) -> GuiTarget {
+    combo_selection(state.target, &[GuiTarget::Window, GuiTarget::Monitor])
 }
 
 /// Returns the output-format combobox selection.
@@ -415,8 +643,8 @@ fn sync_output_extension(state: &GuiState) {
     set_window_text(state.out, &path.to_string_lossy());
 }
 
-/// Maps the ListView selection to an index in [`GuiState::windows`] via `LVIF_PARAM`.
-fn selected_window_index(state: &GuiState) -> Option<usize> {
+/// Maps the ListView selection to an index via `LVIF_PARAM`.
+fn selected_list_index(state: &GuiState) -> Option<usize> {
     let item = unsafe {
         SendMessageW(
             state.list,
@@ -449,6 +677,12 @@ fn selected_window_index(state: &GuiState) -> Option<usize> {
     Some(lv.lParam.0 as usize)
 }
 
+/// Returns the selected monitor's `index` field, if any.
+fn selected_monitor_index(state: &GuiState) -> Option<i32> {
+    let idx = selected_list_index(state)?;
+    state.monitors.get(idx).map(|m| m.index)
+}
+
 /// Resolves `screencap-cli.exe` next to the running GUI executable.
 fn cli_exe_path() -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_default();
@@ -468,10 +702,9 @@ fn extract_cli_error_message(stdout: &str) -> Option<String> {
 }
 
 /// Shell out to screencap-cli.exe with `CREATE_NO_WINDOW` so no console flashes
-/// up.
+/// up. `target` selects the `--target window` vs `--target screen` argv.
 fn run_capture_process(
-    window: &WindowInfo,
-    method: &str,
+    target: CaptureTarget,
     out_path: &str,
     format: ImageFormat,
     include_cursor: bool,
@@ -487,11 +720,7 @@ fn run_capture_process(
     command
         .arg("cap")
         .arg("--method")
-        .arg(method)
-        .arg("--target")
-        .arg("window")
-        .arg("--hwnd")
-        .arg((window.hwnd as usize).to_string())
+        .arg(target.method())
         .arg("--out")
         .arg(out_path)
         .arg("--overwrite")
@@ -501,6 +730,23 @@ fn run_capture_process(
         .arg("2000")
         .arg("--force-alpha")
         .arg("255");
+
+    match target {
+        CaptureTarget::Window(hwnd) => {
+            command
+                .arg("--target")
+                .arg("window")
+                .arg("--hwnd")
+                .arg(hwnd.to_string());
+        }
+        CaptureTarget::Monitor(index) => {
+            command
+                .arg("--target")
+                .arg("screen")
+                .arg("--monitor")
+                .arg(index.to_string());
+        }
+    }
 
     // Do not pass --format when it matches the CLI default; keeps argv minimal.
     if format != ImageFormat::default() {
@@ -539,45 +785,42 @@ fn capture_selected(state: &mut GuiState) {
         return;
     }
 
-    let idx = match selected_window_index(state) {
-        Some(idx) if idx < state.windows.len() => idx,
-        _ => {
-            unsafe {
-                MessageBoxW(
-                    Some(state.hwnd),
-                    w!("Select a window first."),
-                    w!("screencap"),
-                    MB_ICONINFORMATION,
-                );
-            }
-            return;
+    let target = match selected_target(state) {
+        GuiTarget::Window => {
+            let idx = match selected_list_index(state) {
+                Some(idx) if idx < state.windows.len() => idx,
+                _ => {
+                    info_box(state.hwnd, "Select a window first.");
+                    return;
+                }
+            };
+            CaptureTarget::Window(state.windows[idx].hwnd as usize)
+        }
+        GuiTarget::Monitor => {
+            let idx = match selected_list_index(state) {
+                Some(idx) if idx < state.monitors.len() => idx,
+                _ => {
+                    info_box(state.hwnd, "Select a monitor first.");
+                    return;
+                }
+            };
+            CaptureTarget::Monitor(state.monitors[idx].index)
         }
     };
+    if let CaptureTarget::Monitor(index) = &target {
+        state.preferred_monitor = Some(*index);
+    }
 
     let out_path = get_window_text_utf8(state.out);
     if out_path.is_empty() {
-        unsafe {
-            MessageBoxW(
-                Some(state.hwnd),
-                w!("Choose an output path first."),
-                w!("screencap"),
-                MB_ICONINFORMATION,
-            );
-        }
+        info_box(state.hwnd, "Choose an output path first.");
         return;
     }
 
     // Do not defer invalid paths to the CLI: surface a clear dialog here instead
     // of an opaque exit code. `/` is valid on Windows and passes validate_output_path.
     if let Err(reason) = validate_output_path(&out_path) {
-        unsafe {
-            MessageBoxW(
-                Some(state.hwnd),
-                &HSTRING::from(reason.as_str()),
-                w!("screencap"),
-                MB_ICONINFORMATION,
-            );
-        }
+        info_box(state.hwnd, &reason);
         return;
     }
 
@@ -589,20 +832,13 @@ fn capture_selected(state: &mut GuiState) {
             .map(|m| m.is_dir())
             .unwrap_or(false)
     {
-        let msg = format!("output directory does not exist: {parent}");
-        unsafe {
-            MessageBoxW(
-                Some(state.hwnd),
-                &HSTRING::from(msg.as_str()),
-                w!("screencap"),
-                MB_ICONINFORMATION,
-            );
-        }
+        info_box(
+            state.hwnd,
+            &format!("output directory does not exist: {parent}"),
+        );
         return;
     }
 
-    let window = state.windows[idx].clone();
-    let method = selected_method(state);
     let format = selected_format(state);
     let include_cursor = cursor_included(state);
 
@@ -619,7 +855,7 @@ fn capture_selected(state: &mut GuiState) {
     // HWND is not Send; carry raw bits and rebuild on the worker thread.
     let hwnd_raw = state.hwnd.0 as isize;
     std::thread::spawn(move || {
-        let result = run_capture_process(&window, method, &out_path, format, include_cursor);
+        let result = run_capture_process(target, &out_path, format, include_cursor);
         let (wparam, lparam): (usize, isize) = match result {
             Ok(()) => (1, 0),
             Err(err) => (0, Box::into_raw(Box::new(err)) as isize),
@@ -649,6 +885,11 @@ fn on_capture_done(state: &mut GuiState, wparam: WPARAM, lparam: LPARAM) {
     if wparam.0 == 1 {
         let real = real_output_path(&state.pending_out);
         set_status(state, &format!("Saved: {real}"));
+        // Advance the filename so the next capture does not overwrite this one.
+        set_window_text(
+            state.out,
+            &next_output_path(&state.pending_out, selected_format(state)),
+        );
         return;
     }
 
@@ -722,7 +963,7 @@ fn create_combo(parent: HWND, instance: HINSTANCE, id: u16, items: &[&str]) -> H
     combo
 }
 
-/// Creates all child controls and performs the initial window list refresh.
+/// Creates all child controls and performs the initial list refresh.
 fn create_controls(state: &mut GuiState, hwnd: HWND) {
     state.hwnd = hwnd;
     let instance = unsafe { GetModuleHandleW(PCWSTR::null()) }
@@ -739,7 +980,7 @@ fn create_controls(state: &mut GuiState, hwnd: HWND) {
         ID_REFRESH,
     );
 
-    state.method = create_combo(hwnd, instance, ID_METHOD, &METHODS);
+    state.target = create_combo(hwnd, instance, ID_TARGET, &TARGET_LABELS);
     state.format = create_combo(
         hwnd,
         instance,
@@ -807,7 +1048,6 @@ fn create_controls(state: &mut GuiState, hwnd: HWND) {
             )),
         );
     }
-    init_list_columns(state.list);
 
     state.status = create_child(
         hwnd,
@@ -820,7 +1060,10 @@ fn create_controls(state: &mut GuiState, hwnd: HWND) {
     );
 
     resize_controls(state);
-    refresh_windows(state);
+    reload_windows(state);
+    reload_monitors(state);
+    populate_list(state);
+    update_target_status(state);
 }
 
 /// Main window procedure: creates controls, handles layout, commands, ListView
@@ -860,13 +1103,18 @@ unsafe extern "system" fn wnd_proc(
                 let id = wparam.0 as u16;
                 let code = (wparam.0 >> 16) as u16;
                 if id == ID_REFRESH {
-                    refresh_windows(state);
+                    refresh_current_target(state);
                     return LRESULT(0);
                 } else if id == ID_BROWSE {
                     browse_output(state);
                     return LRESULT(0);
                 } else if id == ID_CAPTURE {
                     capture_selected(state);
+                    return LRESULT(0);
+                } else if id == ID_TARGET && code == CBN_SELCHANGE as u16 {
+                    remember_monitor_selection(state);
+                    populate_list(state);
+                    update_target_status(state);
                     return LRESULT(0);
                 } else if id == ID_FORMAT && code == CBN_SELCHANGE as u16 {
                     sync_output_extension(state);
@@ -932,7 +1180,7 @@ pub fn run_gui() -> i32 {
         let hwnd = match CreateWindowExW(
             Default::default(),
             class_name,
-            w!("screencap window picker"),
+            w!("screencap"),
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
@@ -961,7 +1209,23 @@ pub fn run_gui() -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_cli_error_message;
+    use super::{extract_cli_error_message, next_output_path, restore_monitor_selection};
+    use screencap_core::types::{ImageFormat, MonitorInfo, Rect};
+
+    fn monitor(index: i32, primary: bool) -> MonitorInfo {
+        MonitorInfo {
+            hmon: index as isize,
+            index,
+            name: format!(r"\\.\DISPLAY{}", index + 1),
+            desktop: Rect {
+                left: index * 1920,
+                top: 0,
+                right: (index + 1) * 1920,
+                bottom: 1080,
+            },
+            primary,
+        }
+    }
 
     #[test]
     fn extract_cli_error_message_reads_failure_json() {
@@ -976,5 +1240,30 @@ mod tests {
     fn extract_cli_error_message_ignores_non_json() {
         assert!(extract_cli_error_message("not json").is_none());
         assert!(extract_cli_error_message(r#"{"ok":true}"#).is_none());
+    }
+
+    #[test]
+    fn restore_monitor_selection_keeps_prev_index() {
+        let monitors = vec![monitor(0, true), monitor(1, false)];
+        assert_eq!(restore_monitor_selection(&monitors, Some(1)), Some(1));
+    }
+
+    #[test]
+    fn restore_monitor_selection_falls_back_to_primary_when_gone() {
+        let monitors = vec![monitor(0, false), monitor(2, true)];
+        assert_eq!(restore_monitor_selection(&monitors, Some(1)), Some(1));
+    }
+
+    #[test]
+    fn restore_monitor_selection_empty_list() {
+        assert_eq!(restore_monitor_selection(&[], Some(0)), None);
+    }
+
+    #[test]
+    fn next_output_path_keeps_directory_and_uses_format_ext() {
+        let next = next_output_path(r"C:\shots\old.png", ImageFormat::Jpg);
+        assert!(next.starts_with(r"C:\shots\screenshot_"));
+        assert!(next.ends_with(".jpg"));
+        assert_ne!(next, r"C:\shots\old.png");
     }
 }

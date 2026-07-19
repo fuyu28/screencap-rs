@@ -173,17 +173,33 @@ fn info_box(hwnd: HWND, text: &str) {
     }
 }
 
-/// Default output path under the current directory using the selected format extension.
-fn default_output_path() -> String {
+/// Builds `screenshot_<timestamp>.<ext>` under `dir` (or bare if `dir` is empty).
+fn output_path_in_dir(dir: &std::path::Path, format: ImageFormat) -> String {
     let filename = format!(
         "screenshot_{}.{}",
         build_timestamp_for_filename(),
-        ImageFormat::default().extension()
+        format.extension()
     );
-    match std::env::current_dir() {
-        Ok(cwd) => cwd.join(filename).to_string_lossy().into_owned(),
-        Err(_) => filename,
+    if dir.as_os_str().is_empty() {
+        filename
+    } else {
+        dir.join(filename).to_string_lossy().into_owned()
     }
+}
+
+/// Default output path under the current directory using the selected format extension.
+fn default_output_path() -> String {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    output_path_in_dir(&cwd, ImageFormat::default())
+}
+
+/// Same directory as `current`, with a fresh timestamp filename and `format` extension.
+fn next_output_path(current: &str, format: ImageFormat) -> String {
+    let parent = PathBuf::from(current)
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    output_path_in_dir(&parent, format)
 }
 
 /// Lays out child controls to fill the main window client area (`WM_SIZE`).
@@ -869,6 +885,11 @@ fn on_capture_done(state: &mut GuiState, wparam: WPARAM, lparam: LPARAM) {
     if wparam.0 == 1 {
         let real = real_output_path(&state.pending_out);
         set_status(state, &format!("Saved: {real}"));
+        // Advance the filename so the next capture does not overwrite this one.
+        set_window_text(
+            state.out,
+            &next_output_path(&state.pending_out, selected_format(state)),
+        );
         return;
     }
 
@@ -1188,8 +1209,8 @@ pub fn run_gui() -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_cli_error_message, restore_monitor_selection};
-    use screencap_core::types::{MonitorInfo, Rect};
+    use super::{extract_cli_error_message, next_output_path, restore_monitor_selection};
+    use screencap_core::types::{ImageFormat, MonitorInfo, Rect};
 
     fn monitor(index: i32, primary: bool) -> MonitorInfo {
         MonitorInfo {
@@ -1236,5 +1257,13 @@ mod tests {
     #[test]
     fn restore_monitor_selection_empty_list() {
         assert_eq!(restore_monitor_selection(&[], Some(0)), None);
+    }
+
+    #[test]
+    fn next_output_path_keeps_directory_and_uses_format_ext() {
+        let next = next_output_path(r"C:\shots\old.png", ImageFormat::Jpg);
+        assert!(next.starts_with(r"C:\shots\screenshot_"));
+        assert!(next.ends_with(".jpg"));
+        assert_ne!(next, r"C:\shots\old.png");
     }
 }

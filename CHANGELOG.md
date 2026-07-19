@@ -9,6 +9,26 @@ behavior changes.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-19
+
+### Added
+
+- GUI: Window / Monitor target switching, with monitor pick from the ListView
+  (same interaction as windows) and selection preserved across Refresh.
+- GUI: after a successful capture, advance the output filename so the next save
+  does not overwrite.
+- MIT license; CHANGELOG; CLI smoke tests and release asset checksums in CI.
+
+### Fixed
+
+- WGC: detach `FrameArrived` on all capture-loop exits (avoids leaking the
+  handler when the loop returns early).
+- Force-alpha walk uses `row_pitch` instead of flat chunks (correct for padded
+  frames).
+- Reject `--virtual-screen` at parse time; accept only `wgc-window` /
+  `wgc-monitor` as `--method` values.
+- GUI: pass `--no-log` to the CLI child and surface CLI JSON error messages.
+
 ## [0.4.0] - 2026-07-11
 
 ### Breaking
@@ -102,7 +122,8 @@ behavior changes.
 A parallel `v0.1.0-wgc-only` tag shipped the same day as a WGC-only derivative
 of the then-multi-backend tree; that line was later absorbed by v0.2.0.
 
-[Unreleased]: https://github.com/fuyu28/screencap-rs/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/fuyu28/screencap-rs/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/fuyu28/screencap-rs/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/fuyu28/screencap-rs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/fuyu28/screencap-rs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/fuyu28/screencap-rs/compare/v0.1.1...v0.2.0

@@ -308,7 +308,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "screencap-cli"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "clap",
  "screencap-core",
@@ -318,7 +318,7 @@ dependencies = [
 
 [[package]]
 name = "screencap-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "chrono",
  "serde",
@@ -327,7 +327,7 @@ dependencies = [
 
 [[package]]
 name = "screencap-gui"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "screencap-core",
  "serde_json",

@@ -533,10 +533,7 @@ fn run_cap(parsed: &ParsedArgs, logger: &Logger, dpi_applied: &str) -> RunResult
 
         logger.log(
             LogLevel::Info,
-            &format!(
-                "result=success out_path={} duration_ms={}",
-                written_path, duration_ms
-            ),
+            &format!("result=success out_path={written_path} duration_ms={duration_ms}"),
         );
 
         Ok((json, written_path))

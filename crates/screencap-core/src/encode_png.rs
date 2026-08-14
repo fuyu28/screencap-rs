@@ -1,22 +1,27 @@
 //! Image encoding through WIC. PNG is written as 32bpp BGRA; JPEG is converted
 //! to 24bpp BGR (JPEG has no alpha) with a configurable quality.
 
-use windows::Win32::Foundation::{CloseHandle, GENERIC_WRITE, HANDLE, RPC_E_CHANGED_MODE};
+use windows::Win32::Foundation::{
+    CloseHandle, HANDLE, RPC_E_CHANGED_MODE, STG_E_FILEALREADYEXISTS,
+};
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_ContainerFormatJpeg, GUID_ContainerFormatPng,
     GUID_WICPixelFormat24bppBGR, GUID_WICPixelFormat32bppBGRA, IWICImagingFactory,
     WICBitmapDitherTypeNone, WICBitmapEncoderNoCache, WICBitmapPaletteTypeCustom,
 };
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, DeleteFileW, FILE_ATTRIBUTE_DIRECTORY, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_NAME_NORMALIZED, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileAttributesW,
-    GetFinalPathNameByHandleW, INVALID_FILE_ATTRIBUTES, OPEN_EXISTING,
+    CreateFileW, DeleteFileW, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_NAME_NORMALIZED, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, GetFileAttributesW, GetFinalPathNameByHandleW, INVALID_FILE_ATTRIBUTES,
+    OPEN_EXISTING,
 };
 use windows::Win32::System::Com::StructuredStorage::{IPropertyBag2, PROPBAG2};
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
+    IStream, STGM_CREATE, STGM_FAILIFTHERE, STGM_WRITE,
 };
 use windows::Win32::System::Variant::{VARIANT, VARIANT_0_0, VARIANT_0_0_0, VT_R4};
+use windows::Win32::UI::Shell::SHCreateStreamOnFileEx;
 use windows::core::{Error as WinError, HRESULT, PCWSTR, PWSTR};
 
 use crate::types::{ErrorInfo, ImageBuffer, ImageFormat};
@@ -143,6 +148,38 @@ fn win_error(message: &str, e: WinError) -> ErrorInfo {
     ErrorInfo::with_hresult(message, WHERE, e.code().0 as u32)
 }
 
+/// Opens the output path as an `IStream`. `overwrite=false` uses `STGM_FAILIFTHERE`
+/// (CREATE_NEW semantics); `overwrite=true` uses `STGM_CREATE` (truncate existing).
+fn open_output_file_stream(wide_path: PCWSTR, overwrite: bool) -> Result<IStream, ErrorInfo> {
+    let grf_mode = if overwrite {
+        STGM_WRITE | STGM_CREATE
+    } else {
+        STGM_WRITE | STGM_FAILIFTHERE
+    };
+
+    unsafe {
+        SHCreateStreamOnFileEx(
+            wide_path,
+            grf_mode.0,
+            FILE_ATTRIBUTE_NORMAL.0,
+            true,
+            None::<&IStream>,
+        )
+    }
+    .map_err(|e| output_stream_open_error(e, overwrite))
+}
+
+fn output_stream_open_error(e: WinError, overwrite: bool) -> ErrorInfo {
+    if !overwrite {
+        let hr = e.code();
+        // STG_E_FILEALREADYEXISTS, or HRESULT_FROM_WIN32(ERROR_FILE_EXISTS).
+        if hr == STG_E_FILEALREADYEXISTS || hr.0 as u32 == 0x8007_0050 {
+            return ErrorInfo::new("output exists (use --overwrite)", WHERE);
+        }
+    }
+    win_error("SHCreateStreamOnFileEx failed", e)
+}
+
 /// Sets the JPEG encoder's `ImageQuality` option (a float in `0.0..=1.0`) on
 /// the property bag returned by `CreateNewFrame`, before the frame is
 /// initialized. `quality` is the 1-100 CLI value.
@@ -187,23 +224,19 @@ pub fn save_image_wic(
     wide_path.push(0);
     let wide_path = PCWSTR::from_raw(wide_path.as_ptr());
 
-    // Do not defer directory targets to WIC: the directory-specific error is
-    // clearer than "output exists" and applies regardless of overwrite.
+    // Do not defer directory targets to SHCreateStreamOnFileEx: the directory-specific
+    // error is clearer and applies regardless of overwrite. Existence is checked
+    // atomically when opening the output stream (STGM_FAILIFTHERE / CREATE_NEW).
     let attrs = unsafe { GetFileAttributesW(wide_path) };
-    if attrs != INVALID_FILE_ATTRIBUTES {
-        if (attrs & FILE_ATTRIBUTE_DIRECTORY.0) != 0 {
-            return Err(ErrorInfo::new(
-                format!("output path is a directory: {normalized}"),
-                WHERE,
-            ));
-        }
-        if !overwrite {
-            return Err(ErrorInfo::new("output exists (use --overwrite)", WHERE));
-        }
+    if attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY.0) != 0 {
+        return Err(ErrorInfo::new(
+            format!("output path is a directory: {normalized}"),
+            WHERE,
+        ));
     }
 
-    // Do not create missing parent directories here: WIC only reports
-    // ERROR_PATH_NOT_FOUND opaquely via InitializeFromFilename.
+    // Do not create missing parent directories here: SHCreateStreamOnFileEx only
+    // reports ERROR_PATH_NOT_FOUND opaquely.
     if let Some(parent) = output_parent_dir(&normalized) {
         let mut wide_parent = wide_from_utf8(parent);
         wide_parent.push(0);
@@ -233,14 +266,16 @@ pub fn save_image_wic(
         unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }
             .map_err(|e| win_error("CoCreateInstance IWICImagingFactory failed", e))?;
 
+    let file_stream = open_output_file_stream(wide_path, overwrite)?;
+
     let stream =
         unsafe { factory.CreateStream() }.map_err(|e| win_error("CreateStream failed", e))?;
 
-    unsafe { stream.InitializeFromFilename(wide_path, GENERIC_WRITE.0) }
-        .map_err(|e| win_error("InitializeFromFilename failed", e))?;
+    unsafe { stream.InitializeFromIStream(&file_stream) }
+        .map_err(|e| win_error("InitializeFromIStream failed", e))?;
 
-    // Do not leave a partial file on encode failure: InitializeFromFilename
-    // already truncated the path and a 0-byte file would block retry without overwrite.
+    // Do not leave a partial file on encode failure: the output stream may already
+    // have created/truncated the path and a partial file would block retry without overwrite.
     let container = match format {
         ImageFormat::Png => &GUID_ContainerFormatPng,
         ImageFormat::Jpg => &GUID_ContainerFormatJpeg,
@@ -326,9 +361,9 @@ pub fn save_image_wic(
 
     let result = encode();
     if let Err(e) = result {
-        // Do not DeleteFileW before dropping the stream: GENERIC_WRITE without
-        // FILE_SHARE_DELETE keeps the file locked.
+        // Do not DeleteFileW before dropping the streams: the file handle stays locked.
         drop(stream);
+        drop(file_stream);
         unsafe {
             let _ = DeleteFileW(wide_path);
         }
@@ -428,6 +463,54 @@ mod tests {
         save_image_wic(&tiny_image(), &path_str, true, ImageFormat::Png, 0)
             .expect("save should succeed");
         assert!(path.exists(), "expected {path:?} to exist");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn save_image_wic_no_overwrite_creates_new_file() {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "screencap_nooverwrite_new_{}.png",
+            std::process::id()
+        ));
+        let path_str = path.to_string_lossy().into_owned();
+        let _ = std::fs::remove_file(&path);
+
+        save_image_wic(&tiny_image(), &path_str, false, ImageFormat::Png, 0)
+            .expect("save should succeed");
+        assert_eq!(
+            read_head(&path, 4),
+            [0x89, 0x50, 0x4E, 0x47],
+            "expected PNG magic"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn save_image_wic_no_overwrite_rejects_existing_without_truncating() {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "screencap_nooverwrite_existing_{}.png",
+            std::process::id()
+        ));
+        let path_str = path.to_string_lossy().into_owned();
+        let sentinel = b"NOT-A-PNG-SENTINEL";
+        std::fs::write(&path, sentinel).expect("seed file should be writable");
+
+        let err = save_image_wic(&tiny_image(), &path_str, false, ImageFormat::Png, 0).unwrap_err();
+        assert!(
+            err.message.contains("output exists (use --overwrite)"),
+            "unexpected error: {err:?}"
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("existing file should remain readable"),
+            sentinel,
+            "existing file must not be truncated"
+        );
 
         let _ = std::fs::remove_file(&path);
     }

@@ -17,7 +17,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.85
+          toolchain: 1.88
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
@@ -27,10 +27,10 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $meta = cargo metadata --format-version=1 --no-deps | ConvertFrom-Json
-          $bad = @($meta.packages | Where-Object { $_.rust_version -ne "1.85" })
+          $bad = @($meta.packages | Where-Object { $_.rust_version -ne "1.88" })
           if ($bad.Count -gt 0) {
             foreach ($pkg in $bad) {
-              Write-Error "package $($pkg.name) rust_version=$($pkg.rust_version) (expected 1.85)"
+              Write-Error "package $($pkg.name) rust_version=$($pkg.rust_version) (expected 1.88)"
             }
           }
 

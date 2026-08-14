@@ -385,6 +385,7 @@ impl CapCli {
             let has_window_target = window_query.hwnd.is_some()
                 || window_query.pid.is_some()
                 || window_query.foreground
+                || self.hotkey_foreground
                 || window_query.title.is_some()
                 || window_query.class_name.is_some();
             if !has_window_target {
@@ -776,6 +777,24 @@ mod tests {
             "a.png",
         ]);
         argv.extend(args(&["--hotkey", "alt+f9", "--hotkey-foreground"]));
+        let parsed = parse_args(&argv).expect("hotkey-foreground with hotkey should parse");
+        assert!(parsed.cap.hotkey_enabled);
+        assert!(parsed.cap.window_query.foreground);
+    }
+
+    #[test]
+    fn hotkey_foreground_with_hotkey_is_window_target() {
+        let argv = args(&[
+            "screencap-cli",
+            "cap",
+            "--method",
+            "wgc-window",
+            "--out",
+            "a.png",
+            "--hotkey",
+            "alt+f9",
+            "--hotkey-foreground",
+        ]);
         let parsed = parse_args(&argv).expect("hotkey-foreground with hotkey should parse");
         assert!(parsed.cap.hotkey_enabled);
         assert!(parsed.cap.window_query.foreground);

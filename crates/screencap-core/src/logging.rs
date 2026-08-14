@@ -18,8 +18,7 @@ struct LoggerState {
 /// written per line. File name: `<timestamp>_<pid>_<command>.log` in log_dir.
 pub struct Logger {
     inner: Mutex<LoggerState>,
-    // Kept outside the mutex so log() can reject below-threshold messages
-    // without locking.
+    // Do not lock the mutex for below-threshold messages: min_level lives outside.
     min_level: AtomicU8,
 }
 
@@ -95,7 +94,7 @@ impl Logger {
     }
 }
 
-/// trace/debug/warn/error, anything else -> Info.
+/// trace/debug/warn/error. Unrecognized strings (including uppercase) map to Info.
 pub fn parse_log_level(s: &str) -> LogLevel {
     match s {
         "trace" => LogLevel::Trace,
@@ -183,7 +182,6 @@ mod tests {
         assert_eq!(parse_log_level("info"), LogLevel::Info);
         assert_eq!(parse_log_level("bogus"), LogLevel::Info);
         assert_eq!(parse_log_level(""), LogLevel::Info);
-        // Case-sensitive: uppercase is not recognised and falls back to Info.
         assert_eq!(parse_log_level("TRACE"), LogLevel::Info);
     }
 

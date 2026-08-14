@@ -1,5 +1,6 @@
 use crate::types::{CropMode, CropRect, ErrorInfo, ImageBuffer, Pad, Rect, WindowInfo};
 
+/// Returns the overlapping region of two screen rectangles.
 fn intersect(a: Rect, b: Rect) -> Rect {
     Rect {
         left: a.left.max(b.left),
@@ -86,6 +87,8 @@ pub fn crop_image_in_place(crop_screen_rect: Rect, img: &mut ImageBuffer) -> Res
         return Ok(());
     }
 
+    // Do not skip repack when the crop is the full image but row_pitch is padded:
+    // downstream save assumes row_pitch == width * 4.
     let x0 = (c.left - img.origin_x) as usize;
     let y0 = (c.top - img.origin_y) as usize;
     let nw = c.width();
@@ -164,8 +167,6 @@ mod tests {
 
     #[test]
     fn resolve_none_pad_cannot_exceed_capture_rect() {
-        // Pad expands the base, but the final intersection clips back to the
-        // capture rect, so padding a full-screen None crop is a no-op.
         let cap = rect(0, 0, 100, 80);
         let pad = Pad {
             l: 10,
@@ -183,7 +184,6 @@ mod tests {
         let win = window_with_rects(rect(-20, -10, 50, 40), Rect::default(), Rect::default());
         let out = resolve_crop_rect_screen(CropMode::Window, None, Some(&win), cap, Pad::default())
             .unwrap();
-        // Window rect intersected with capture rect.
         assert_eq!(out, rect(0, 0, 50, 40));
     }
 
@@ -255,7 +255,6 @@ mod tests {
     #[test]
     fn resolve_errors_when_clip_is_empty() {
         let cap = rect(0, 0, 100, 80);
-        // Window rect lies entirely to the right of the capture rect.
         let win = window_with_rects(rect(200, 200, 300, 300), Rect::default(), Rect::default());
         let err = resolve_crop_rect_screen(CropMode::Window, None, Some(&win), cap, Pad::default())
             .unwrap_err();
@@ -272,7 +271,6 @@ mod tests {
         assert_eq!(img.row_pitch, 8);
         assert_eq!(img.origin_x, 1);
         assert_eq!(img.origin_y, 1);
-        // Pixels (1,1),(2,1),(1,2),(2,2) with encoding [x, y, 0, 255].
         assert_eq!(
             img.bgra,
             vec![1, 1, 0, 255, 2, 1, 0, 255, 1, 2, 0, 255, 2, 2, 0, 255]
@@ -281,14 +279,12 @@ mod tests {
 
     #[test]
     fn crop_in_place_respects_nonzero_origin() {
-        // Image occupies screen rect (10,10)-(14,13); crop the middle column.
         let mut img = coord_buffer(4, 3, 10, 10);
         crop_image_in_place(rect(11, 10, 13, 12), &mut img).unwrap();
         assert_eq!(img.origin_x, 11);
         assert_eq!(img.origin_y, 10);
         assert_eq!(img.width, 2);
         assert_eq!(img.height, 2);
-        // Local x0 = 11-10 = 1, y0 = 0. Row 0: pixels (1,0),(2,0); row1 (1,1),(2,1).
         assert_eq!(
             img.bgra,
             vec![1, 0, 0, 255, 2, 0, 0, 255, 1, 1, 0, 255, 2, 1, 0, 255]
@@ -306,8 +302,6 @@ mod tests {
 
     #[test]
     fn crop_in_place_full_rect_padded_pitch_repacks() {
-        // row_pitch has 8 bytes of padding per row; a "full rect" crop still
-        // rebuilds the buffer to a tight pitch.
         let width = 2;
         let height = 2;
         let row_pitch = width * 4 + 8;
@@ -316,7 +310,7 @@ mod tests {
             for x in 0..width {
                 bgra.extend_from_slice(&[x as u8, y as u8, 0, 255]);
             }
-            bgra.extend_from_slice(&[0xFF; 8]); // padding bytes
+            bgra.extend_from_slice(&[0xFF; 8]);
         }
         let mut img = ImageBuffer {
             width,

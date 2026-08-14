@@ -47,9 +47,8 @@ pub fn validate_output_path(path: &str) -> Result<(), String> {
             return Err(format!("Output path contains an invalid character: {ch}"));
         }
     }
-    // `Path::file_name` ignores trailing separators (`C:\dir\` yields `dir`),
-    // so check those explicitly: a path ending in a separator names a
-    // directory, not a file.
+    // Do not rely on Path::file_name alone: it strips trailing separators and
+    // would accept directory paths such as `C:\dir\`.
     if path.ends_with('/')
         || path.ends_with('\\')
         || std::path::Path::new(path).file_name().is_none()
@@ -66,7 +65,6 @@ mod tests {
     #[test]
     fn valid_paths_pass() {
         assert!(validate_output_path(r"C:\Users\me\shot.png").is_ok());
-        // Forward slashes are a valid separator on Windows and must be accepted.
         assert!(validate_output_path("C:/Users/me/shot.png").is_ok());
         assert!(validate_output_path("shot.png").is_ok());
     }
@@ -87,12 +85,9 @@ mod tests {
                 "{bad} should be rejected"
             );
         }
-        // Control characters are rejected too.
         assert!(validate_output_path("a\u{0007}b.png").is_err());
     }
 
-    // `Path::file_name` uses the target's separator rules, so these bare-root
-    // and no-file-name cases only resolve to `None` on Windows.
     #[cfg(windows)]
     #[test]
     fn paths_without_a_file_name_are_rejected() {

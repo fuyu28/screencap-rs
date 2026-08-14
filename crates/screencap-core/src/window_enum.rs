@@ -13,12 +13,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
     IsWindowVisible,
 };
 
+/// Reads the window title as UTF-8.
 pub fn get_window_text_utf8(hwnd: HWND) -> String {
     let len = unsafe { GetWindowTextLengthW(hwnd) }.max(0) as usize;
     let mut ws: Vec<u16> = vec![0u16; len + 1];
-    // GetWindowTextLengthW's estimate can exceed what GetWindowTextW actually
-    // copies; slice by the real copied length so trailing NULs don't leak
-    // into the title.
+    // Do not trust GetWindowTextLengthW alone: GetWindowTextW may copy fewer
+    // code units; slice by the returned length so trailing NULs stay out of the title.
     let copied = if len > 0 {
         unsafe { GetWindowTextW(hwnd, &mut ws) }.max(0) as usize
     } else {
@@ -27,14 +27,15 @@ pub fn get_window_text_utf8(hwnd: HWND) -> String {
     utf8_from_wide(&ws[..copied])
 }
 
+/// Reads the window class name as UTF-8.
 fn get_class_name_utf8(hwnd: HWND) -> String {
-    // Class names can be up to 256 chars plus the NUL terminator.
     let mut buf = [0u16; 257];
     let len = unsafe { GetClassNameW(hwnd, &mut buf) };
     let len = len.max(0) as usize;
     utf8_from_wide(&buf[..len])
 }
 
+/// Returns the client area converted to screen coordinates.
 fn get_client_rect_screen(hwnd: HWND) -> Rect {
     let mut cr = RECT::default();
     if unsafe { GetClientRect(hwnd, &mut cr) }.is_err() {
@@ -50,10 +51,8 @@ fn get_client_rect_screen(hwnd: HWND) -> Rect {
             y: cr.bottom,
         },
     ];
-    // ClientToScreen on individual corner points mirrors x for
-    // WS_EX_LAYOUTRTL windows, producing right < left. MapWindowPoints maps
-    // both points in one call without that mirroring; normalize afterwards
-    // in case the window is still RTL-mirrored.
+    // Do not use ClientToScreen on individual corners: RTL layout mirrors x
+    // and can yield right < left. MapWindowPoints maps both corners together.
     unsafe {
         MapWindowPoints(Some(hwnd), None, &mut points);
     }
@@ -73,6 +72,7 @@ fn get_client_rect_screen(hwnd: HWND) -> Rect {
     }
 }
 
+/// Returns DWM extended frame bounds, or `fallback` when DWM is unavailable.
 fn get_dwm_frame_rect(hwnd: HWND, fallback: Rect) -> Rect {
     let mut r = RECT::default();
     let ok = unsafe {
@@ -90,18 +90,20 @@ fn area(r: &Rect) -> i64 {
     (r.width().max(0) as i64) * (r.height().max(0) as i64)
 }
 
+/// ASCII case-insensitive substring match for `--title` filters.
 fn contains_i(hay: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return true;
     }
-    // windows() panics on a zero-size window, so the empty-needle check above
-    // must stay first. ASCII-case-insensitive containment, equivalent to the
-    // previous to_ascii_lowercase().contains() since that only folds ASCII.
+    // Do not call str::windows with an empty needle: it panics. Empty needle
+    // means "match all" for title/class filters.
     hay.as_bytes()
         .windows(needle.len())
         .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
+/// `EnumWindows` callback: appends one [`WindowInfo`] per top-level HWND into
+/// the `Vec` in `LPARAM`.
 extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> windows::core::BOOL {
     let vec = unsafe { &mut *(lparam.0 as *mut Vec<WindowInfo>) };
 
@@ -223,8 +225,7 @@ pub fn resolve_window_target(
         (usable, is_root, area(&w.rect))
     };
 
-    // Cached key: GetAncestor is a syscall, so compute the rank once per
-    // candidate instead of once per comparison.
+    // Do not call GetAncestor inside sort_by: rank each candidate once instead.
     candidates.sort_by_cached_key(|w| std::cmp::Reverse(rank(w)));
 
     let winner = candidates[0].clone();
@@ -257,8 +258,6 @@ mod tests {
 
     #[test]
     fn contains_i_empty_needle_matches_without_panicking() {
-        // The empty-needle guard must return true and never reach the
-        // panicking `windows(0)` call.
         assert!(contains_i("anything", ""));
         assert!(contains_i("", ""));
     }

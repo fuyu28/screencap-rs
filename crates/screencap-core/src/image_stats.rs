@@ -16,6 +16,7 @@ pub fn compute_image_stats(img: &ImageBuffer) -> ImageStats {
     let mut b_sum: u64 = 0;
     let row_len = (img.width as usize) * 4;
 
+    // Do not walk the full row_pitch: bytes beyond width*4 are capture padding, not pixels.
     for y in 0..img.height {
         let row_start = (y as usize) * (img.row_pitch as usize);
         let row = &img.bgra[row_start..row_start + row_len];
@@ -56,6 +57,7 @@ pub fn compute_frame_ratios(img: &ImageBuffer) -> (f64, f64) {
     let mut transparent: u64 = 0;
     let row_len = (img.width as usize) * 4;
 
+    // Do not walk the full row_pitch: bytes beyond width*4 are capture padding, not pixels.
     for y in 0..img.height {
         let row_start = (y as usize) * (img.row_pitch as usize);
         let row = &img.bgra[row_start..row_start + row_len];
@@ -118,13 +120,11 @@ mod tests {
         let s = compute_image_stats(&img);
         approx(s.black_ratio, 0.0);
         approx(s.transparent_ratio, 0.0);
-        // 0.2126*255 + 0.7152*255 + 0.0722*255 == 255.
         approx(s.avg_luma, 255.0);
     }
 
     #[test]
     fn all_transparent_black_counts_both() {
-        // r==g==b==0 counts as black; a==0 counts as transparent.
         let img = solid(2, 2, [0, 0, 0, 0]);
         let s = compute_image_stats(&img);
         approx(s.black_ratio, 1.0);
@@ -133,9 +133,7 @@ mod tests {
 
     #[test]
     fn half_black_half_white() {
-        // Two black + two white pixels.
         let mut img = solid(2, 2, [0, 0, 0, 255]);
-        // Overwrite the last two pixels with white.
         for i in 2..4 {
             let base = i * 4;
             img.bgra[base..base + 4].copy_from_slice(&[255, 255, 255, 255]);
@@ -148,7 +146,6 @@ mod tests {
 
     #[test]
     fn luma_uses_bt709_weights() {
-        // Pure green pixel: b=0, g=255, r=0 -> luma = 0.7152*255.
         let img = solid(1, 1, [0, 255, 0, 255]);
         let s = compute_image_stats(&img);
         approx(s.avg_luma, 0.7152 * 255.0);
@@ -167,16 +164,14 @@ mod tests {
 
     #[test]
     fn stats_ignore_row_pitch_padding() {
-        // 2x2 image with 8 padding bytes per row; padding must not be counted.
         let width = 2;
         let height = 2;
         let row_pitch = width * 4 + 8;
         let mut bgra = Vec::new();
         for _ in 0..height {
             for _ in 0..width {
-                bgra.extend_from_slice(&[0, 0, 0, 255]); // black, opaque
+                bgra.extend_from_slice(&[0, 0, 0, 255]);
             }
-            // Non-black, transparent padding that would skew stats if counted.
             bgra.extend_from_slice(&[255, 255, 255, 0]);
             bgra.extend_from_slice(&[255, 255, 255, 0]);
         }
@@ -197,7 +192,6 @@ mod tests {
     #[test]
     fn frame_ratios_match_full_stats() {
         let mut img = solid(2, 2, [0, 0, 0, 0]);
-        // Make one pixel opaque white so ratios are strictly between 0 and 1.
         img.bgra[0..4].copy_from_slice(&[255, 255, 255, 255]);
         let full = compute_image_stats(&img);
         let (black, transparent) = compute_frame_ratios(&img);

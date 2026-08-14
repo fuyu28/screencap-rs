@@ -1,7 +1,14 @@
 # screencap-rs
 
-Rust rewrite of [screencap](https://github.com/fuyu28/screencap) — a Windows
-screenshot comparison tool. Behavior-compatible with the C++ version.
+Windows-only screenshot tool built on [Windows.Graphics.Capture
+(WGC)](https://learn.microsoft.com/en-us/uwp/api/windows.graphics.capture).
+Rust successor to the original [screencap](https://github.com/fuyu28/screencap)
+C++ project.
+
+`screencap-cli.exe` is the primary interface: embed it next to a host app and
+drive captures programmatically (`--json`, stable exit codes — see
+[Embedding](#embedding)). `screencap.exe` is an optional Win32 window-picker
+GUI that shells out to the CLI.
 
 ## Binaries
 
@@ -25,11 +32,10 @@ Binaries land in `target/x86_64-pc-windows-msvc/release/`
 - `wgc-window` (window capture)
 - `wgc-monitor` (monitor capture)
 
-All methods use Windows.Graphics.Capture and are cropped to the frame's
-ContentSize.
-
-See the original repo's `docs/capture-investigation.md` for the method
-comparison notes.
+All methods use WGC and are cropped to the frame's ContentSize. The original
+[screencap](https://github.com/fuyu28/screencap) repo documented other capture
+backends (GDI, DXGI, etc.) in `docs/capture-investigation.md`; this tree is
+WGC-only.
 
 ## Output formats
 

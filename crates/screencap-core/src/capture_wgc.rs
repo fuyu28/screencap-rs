@@ -42,6 +42,7 @@ fn to_err_with(message: &str, where_: &str, e: &windows::core::Error) -> ErrorIn
     ErrorInfo::with_hresult(message, where_, e.code().0 as u32)
 }
 
+/// Wraps a D3D11 device as the WinRT `IDirect3DDevice` WGC expects.
 fn create_winrt_d3d_device(d3d_device: &ID3D11Device) -> Result<IDirect3DDevice, ErrorInfo> {
     let dxgi_device: IDXGIDevice = d3d_device.cast().map_err(|e| {
         to_err_with(
@@ -63,6 +64,7 @@ fn create_winrt_d3d_device(d3d_device: &ID3D11Device) -> Result<IDirect3DDevice,
         .map_err(|e| to_err(e, "CreateWinRtD3DDevice"))
 }
 
+/// Builds a WGC capture item for the given top-level window.
 fn create_capture_item_from_hwnd(hwnd: HWND) -> Result<GraphicsCaptureItem, ErrorInfo> {
     let interop: IGraphicsCaptureItemInterop =
         windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()
@@ -71,6 +73,7 @@ fn create_capture_item_from_hwnd(hwnd: HWND) -> Result<GraphicsCaptureItem, Erro
         .map_err(|e| to_err_with("CreateForWindow failed", "CreateCaptureItemFromHwnd", &e))
 }
 
+/// Builds a WGC capture item for the given display monitor.
 fn create_capture_item_from_monitor(hmon: HMONITOR) -> Result<GraphicsCaptureItem, ErrorInfo> {
     let interop: IGraphicsCaptureItemInterop =
         windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()
@@ -148,15 +151,18 @@ fn copy_frame_to_image(
     )
 }
 
+/// Returns true when `method` targets a window (as opposed to a monitor).
 fn is_wgc_window_method(method: &str) -> bool {
     method == "wgc-window"
 }
 
+/// Heuristic filter for WGC warm-up frames (mostly black or transparent).
 fn is_probably_usable_frame(img: &ImageBuffer) -> bool {
     let (black_ratio, transparent_ratio) = crate::image_stats::compute_frame_ratios(img);
     transparent_ratio < 0.98 && black_ratio < 0.98
 }
 
+/// Open WGC session handles shared by [`run_capture_loop`].
 struct WgcResources<'a> {
     frame_pool: &'a Direct3D11CaptureFramePool,
     session: &'a GraphicsCaptureSession,
@@ -166,9 +172,8 @@ struct WgcResources<'a> {
 }
 
 /// Registers `FrameArrived`, starts the session, and receives up to
-/// `MAX_FRAMES` frames looking for a usable one. The event handler only
-/// forwards frames through a channel, so logging and image processing stay on
-/// the calling thread.
+/// `MAX_FRAMES` frames looking for a usable one. Uses the same screen origin
+/// for every iteration in the loop.
 fn run_capture_loop(
     ctx: &CaptureContext,
     logger: &Logger,
@@ -190,6 +195,23 @@ fn run_capture_loop(
         .FrameArrived(&handler)
         .map_err(|e| to_err(e, "CaptureWithWgc"))?;
 
+    // Do not leave FrameArrived registered after StartCapture fails; Close still
+    // runs in the caller but an attached handler is unnecessary work on that path.
+    /// Unregisters the WGC `FrameArrived` handler when capture setup or the loop ends.
+    struct FrameArrivedGuard<'a> {
+        pool: &'a Direct3D11CaptureFramePool,
+        token: i64,
+    }
+    impl Drop for FrameArrivedGuard<'_> {
+        fn drop(&mut self) {
+            let _ = self.pool.RemoveFrameArrived(self.token);
+        }
+    }
+    let _arrived_guard = FrameArrivedGuard {
+        pool: res.frame_pool,
+        token,
+    };
+
     res.session
         .StartCapture()
         .map_err(|e| to_err(e, "CaptureWithWgc"))?;
@@ -200,7 +222,6 @@ fn run_capture_loop(
     let timeout = Duration::from_millis(ctx.common.timeout_ms.max(0) as u64);
     let deadline = Instant::now() + timeout;
 
-    // Loop-invariant: the same origin is used for every frame in this loop.
     let origin = if is_wgc_window_method(&ctx.cap.method) {
         ctx.window
             .as_ref()
@@ -217,11 +238,8 @@ fn run_capture_loop(
         }
         match rx.recv_timeout(remaining) {
             Ok(frame) => {
-                // The window can grow between pool creation (at item.Size())
-                // and frame arrival; when that happens ContentSize outgrows
-                // the pool's texture size, and the frame must be dropped
-                // while the pool is recreated at the new size so the next
-                // frame arrives un-clamped.
+                // Do not copy into a pool sized at item.Size() when ContentSize
+                // grew: recreate the pool first or the frame stays clamped.
                 if let Ok(content_size) = frame.ContentSize()
                     && (content_size.Width != pool_size.Width
                         || content_size.Height != pool_size.Height)
@@ -278,8 +296,6 @@ fn run_capture_loop(
         }
     }
 
-    let _ = res.frame_pool.RemoveFrameArrived(token);
-
     match best {
         Some(img) => Ok(img),
         None => {
@@ -288,12 +304,12 @@ fn run_capture_loop(
     }
 }
 
+/// Captures one frame via WGC for the target in `ctx`, returning a BGRA buffer.
 pub fn capture_with_wgc(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> {
     let logger = ctx.logger;
 
-    // RoInitialize's HRESULT wrapper treats S_FALSE (already initialized on
-    // this thread, e.g. by a prior capture attempt) as success; only a real
-    // failure (such as a conflicting apartment type) is propagated.
+    // Do not treat RoInitialize S_FALSE (already initialized on this thread) as
+    // failure; only a conflicting apartment type is propagated.
     unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.map_err(|e| to_err(e, "CaptureWithWgc"))?;
 
     let supported =
@@ -338,14 +354,12 @@ pub fn capture_with_wgc(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> 
         .CreateCaptureSession(&item)
         .map_err(|e| to_err(e, "CaptureWithWgc"))?;
 
-    // WGC includes the cursor by default, so only excluding it needs the
-    // IsCursorCaptureEnabled property (Windows 10 version 1903 / build 18362+).
-    // Skipping the call when the cursor is requested keeps --cursor working on
-    // older builds; exclusion fails clearly where the property is missing.
+    // Do not call SetIsCursorCaptureEnabled when the cursor is requested: WGC
+    // includes it by default and the property is missing on pre-1903 builds.
+    // Exclusion uses the property and fails clearly where it is unavailable.
     //
-    // From here on, session/frame_pool exist, so we always close them before
-    // returning -- any error (including the property failure) reaches the
-    // return only after cleanup runs.
+    // Do not early-return before Close: funnel property failure through the
+    // and_then chain below so session/frame_pool always close on every path.
     let result = if ctx.cap.include_cursor {
         Ok(())
     } else {
@@ -413,21 +427,18 @@ mod tests {
 
     #[test]
     fn usable_frame_accepts_normal_content() {
-        // Fully opaque, non-black content is usable.
         let img = solid(4, 4, [10, 20, 30, 255]);
         assert!(is_probably_usable_frame(&img));
     }
 
     #[test]
     fn usable_frame_rejects_fully_black() {
-        // black_ratio == 1.0 >= 0.98.
         let img = solid(4, 4, [0, 0, 0, 255]);
         assert!(!is_probably_usable_frame(&img));
     }
 
     #[test]
     fn usable_frame_rejects_fully_transparent() {
-        // transparent_ratio == 1.0 >= 0.98 (non-black color so only alpha trips).
         let img = solid(4, 4, [10, 20, 30, 0]);
         assert!(!is_probably_usable_frame(&img));
     }

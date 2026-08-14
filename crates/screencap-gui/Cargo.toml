@@ -2,6 +2,8 @@
 name = "screencap-gui"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "screencap"
@@ -9,4 +11,5 @@ path = "src/main.rs"
 
 [dependencies]
 screencap-core = { path = "../screencap-core" }
+serde_json = "1.0.150"
 windows = { workspace = true }

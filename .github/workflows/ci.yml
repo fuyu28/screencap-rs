@@ -15,10 +15,24 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install Rust
-        run: rustup component add rustfmt clippy
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.85
+          components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Verify MSRV metadata
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $meta = cargo metadata --format-version=1 --no-deps | ConvertFrom-Json
+          $bad = @($meta.packages | Where-Object { $_.rust_version -ne "1.85" })
+          if ($bad.Count -gt 0) {
+            foreach ($pkg in $bad) {
+              Write-Error "package $($pkg.name) rust_version=$($pkg.rust_version) (expected 1.85)"
+            }
+          }
 
       - name: Format
         run: cargo fmt --all -- --check

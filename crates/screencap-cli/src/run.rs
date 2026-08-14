@@ -59,16 +59,8 @@ struct BootstrapOptions {
     no_log: bool,
 }
 
-fn is_bootstrap_valueless_flag(arg: &str) -> bool {
-    matches!(arg, "--json" | "--no-log")
-}
-
-fn is_bootstrap_switch(arg: &str) -> bool {
-    is_bootstrap_valueless_flag(arg)
-        || arg == "--log-dir"
-        || arg.starts_with("--log-dir=")
-        || arg == "--log-level"
-        || arg.starts_with("--log-level=")
+fn is_opt_token(arg: &str) -> bool {
+    arg.starts_with('-')
 }
 
 /// Scans `argv` for global flags before clap runs so logging can start early.
@@ -97,19 +89,15 @@ fn pre_parse_bootstrap(argv: &[String]) -> BootstrapOptions {
     let mut i = 1usize;
     while i < argc {
         let a = &argv[i];
-        if a == "--log-dir" && i + 1 < argc && !is_bootstrap_switch(&argv[i + 1]) {
+        if a == "--log-dir" && i + 1 < argc && !is_opt_token(&argv[i + 1]) {
             i += 1;
             b.log_dir = argv[i].clone();
-        } else if let Some(value) = a.strip_prefix("--log-dir=")
-            && !is_bootstrap_valueless_flag(value)
-        {
+        } else if let Some(value) = a.strip_prefix("--log-dir=") {
             b.log_dir = value.to_string();
-        } else if a == "--log-level" && i + 1 < argc && !is_bootstrap_switch(&argv[i + 1]) {
+        } else if a == "--log-level" && i + 1 < argc && !is_opt_token(&argv[i + 1]) {
             i += 1;
             b.log_level = screencap_core::logging::parse_log_level(&argv[i]);
-        } else if let Some(value) = a.strip_prefix("--log-level=")
-            && !is_bootstrap_valueless_flag(value)
-        {
+        } else if let Some(value) = a.strip_prefix("--log-level=") {
             b.log_level = screencap_core::logging::parse_log_level(value);
         } else if a == "--no-log" {
             b.no_log = true;
@@ -930,7 +918,7 @@ mod tests {
     #[test]
     fn pre_parse_bootstrap_equals_log_dir_does_not_consume_json_token() {
         let b = pre_parse_bootstrap(&argv(&["screencap", "cap", "--log-dir=--json", "--json"]));
-        assert_eq!(b.log_dir, "./logs");
+        assert_eq!(b.log_dir, "--json");
         assert!(b.json);
     }
 

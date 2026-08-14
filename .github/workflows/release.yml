@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      - "v[0-9]*.[0-9]*.[0-9]*"
   workflow_dispatch:
     inputs:
       tag:
@@ -20,6 +20,18 @@ jobs:
     env:
       TAG: ${{ inputs.tag || github.ref_name }}
     steps:
+      - name: Validate tag
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tag = $env:TAG
+          if ($tag -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "tag must be vMAJOR.MINOR.PATCH (got: $tag)"
+          }
+          $expected = $tag.Substring(1)
+          Write-Host "tag=$tag expected_version=$expected"
+          echo "EXPECTED_VERSION=$expected" >> $env:GITHUB_ENV
+
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.tag || github.ref_name }}
@@ -45,10 +57,14 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $cli = $env:CLI
-          $out = & ".\$cli" --version
+          $out = (& ".\$cli" --version).Trim()
           if ($LASTEXITCODE -ne 0) { throw "packaged --version exit=$LASTEXITCODE" }
-          if ($out -notmatch '^screencap-cli\s+\d+\.\d+\.\d+') {
+          if ($out -notmatch '^screencap-cli\s+(\d+\.\d+\.\d+)$') {
             throw "unexpected packaged --version: $out"
+          }
+          $actual = $Matches[1]
+          if ($actual -ne $env:EXPECTED_VERSION) {
+            throw "packaged version mismatch: expected $($env:EXPECTED_VERSION), got $actual"
           }
           Write-Host "packaged version: $out"
 

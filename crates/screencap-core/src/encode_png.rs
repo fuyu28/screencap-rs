@@ -266,15 +266,12 @@ pub fn save_image_wic(
         unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }
             .map_err(|e| win_error("CoCreateInstance IWICImagingFactory failed", e))?;
 
-    let file_stream = open_output_file_stream(wide_path, overwrite)?;
-
     let stream =
         unsafe { factory.CreateStream() }.map_err(|e| win_error("CreateStream failed", e))?;
 
-    unsafe { stream.InitializeFromIStream(&file_stream) }
-        .map_err(|e| win_error("InitializeFromIStream failed", e))?;
+    let file_stream = open_output_file_stream(wide_path, overwrite)?;
 
-    // Do not leave a partial file on encode failure: the output stream may already
+    // Do not leave a partial file on failure after open: the output stream may already
     // have created/truncated the path and a partial file would block retry without overwrite.
     let container = match format {
         ImageFormat::Png => &GUID_ContainerFormatPng,
@@ -282,6 +279,9 @@ pub fn save_image_wic(
     };
 
     let encode = || -> Result<(), ErrorInfo> {
+        unsafe { stream.InitializeFromIStream(&file_stream) }
+            .map_err(|e| win_error("InitializeFromIStream failed", e))?;
+
         let encoder = unsafe { factory.CreateEncoder(container, std::ptr::null()) }
             .map_err(|e| win_error("CreateEncoder failed", e))?;
 

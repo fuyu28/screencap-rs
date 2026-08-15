@@ -17,6 +17,7 @@ use windows::Win32::System::Com::{
     CoTaskMemFree, CoUninitialize,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::SystemServices::SS_PATHELLIPSIS;
 use windows::Win32::UI::Controls::{
     BST_CHECKED, ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx,
     LIST_VIEW_ITEM_STATE_FLAGS, LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW, LVIF_PARAM, LVIF_TEXT,
@@ -718,6 +719,17 @@ fn extract_cli_error_message(stdout: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Success text for the status line. Kept short so the path survives the
+/// STATIC control's `SS_PATHELLIPSIS` truncation.
+fn capture_success_status(out_path: &str) -> String {
+    format!("OK: {}", real_output_path(out_path))
+}
+
+/// Failure text for the status line; the full message also goes to a message box.
+fn capture_failure_status(error: &str) -> String {
+    format!("FAILED: {error}")
+}
+
 /// Shell out to screencap-cli.exe with `CREATE_NO_WINDOW` so no console flashes
 /// up. `target` selects the `--target window` vs `--target screen` argv.
 fn run_capture_process(
@@ -907,8 +919,7 @@ fn on_capture_done(state: &mut GuiState, wparam: WPARAM, lparam: LPARAM) {
     }
 
     if wparam.0 == 1 {
-        let real = real_output_path(&state.pending_out);
-        set_status(state, &format!("Saved: {real}"));
+        set_status(state, &capture_success_status(&state.pending_out));
         // Advance the filename so the next capture does not overwrite this one.
         set_window_text(
             state.out,
@@ -918,12 +929,12 @@ fn on_capture_done(state: &mut GuiState, wparam: WPARAM, lparam: LPARAM) {
     }
 
     let err = *unsafe { Box::from_raw(lparam.0 as *mut String) };
-    set_status(state, &err);
+    set_status(state, &capture_failure_status(&err));
     unsafe {
         MessageBoxW(
             Some(state.hwnd),
             &HSTRING::from(err.as_str()),
-            w!("screencap"),
+            w!("Capture failed"),
             MB_ICONERROR,
         );
     }
@@ -1080,7 +1091,7 @@ fn create_controls(state: &mut GuiState, hwnd: HWND) {
         Default::default(),
         w!("STATIC"),
         PCWSTR::null(),
-        WS_CHILD | WS_VISIBLE,
+        WS_CHILD | WS_VISIBLE | WINDOW_STYLE(SS_PATHELLIPSIS.0),
         ID_STATUS,
     );
 
@@ -1238,7 +1249,10 @@ pub fn run_gui() -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_cli_error_message, next_output_path, restore_monitor_selection};
+    use super::{
+        capture_failure_status, capture_success_status, extract_cli_error_message,
+        next_output_path, restore_monitor_selection,
+    };
     use screencap_core::types::{ImageFormat, MonitorInfo, Rect};
 
     fn monitor(index: i32, primary: bool) -> MonitorInfo {
@@ -1269,6 +1283,18 @@ mod tests {
     fn extract_cli_error_message_ignores_non_json() {
         assert!(extract_cli_error_message("not json").is_none());
         assert!(extract_cli_error_message(r#"{"ok":true}"#).is_none());
+    }
+
+    #[test]
+    fn capture_status_identifies_success_and_failure() {
+        assert_eq!(
+            capture_success_status(r"C:\captures\shot.png"),
+            r"OK: C:\captures\shot.png"
+        );
+        assert_eq!(
+            capture_failure_status("access denied"),
+            "FAILED: access denied"
+        );
     }
 
     #[test]

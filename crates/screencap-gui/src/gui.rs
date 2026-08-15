@@ -1105,8 +1105,10 @@ unsafe extern "system" fn wnd_proc(
         let params = unsafe { (*cs).lpCreateParams };
         unsafe {
             let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, params as isize);
+            // Returning 1 without DefWindowProcW skips NC setup that copies
+            // CREATESTRUCTW.lpszName into the title bar.
+            return DefWindowProcW(hwnd, msg, wparam, lparam);
         }
-        return LRESULT(1);
     }
 
     let state_ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut GuiState;

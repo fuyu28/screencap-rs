@@ -56,6 +56,7 @@ const ID_CAPTURE: u16 = 1006;
 const ID_STATUS: u16 = 1007;
 const ID_FORMAT: u16 = 1008;
 const ID_CURSOR: u16 = 1009;
+const ID_CROP: u16 = 1010;
 
 /// GUI target-type combo entries. Index maps 1:1 to the [`GuiTarget`] variants.
 const TARGET_LABELS: [&str; 2] = ["Window", "Monitor"];
@@ -76,6 +77,8 @@ const MONITOR_COLUMNS: [(&str, i32); 5] = [
 /// heap-allocated `String` (boxed via `Box::into_raw`) with the exact error
 /// text, which the handler reclaims with `Box::from_raw`.
 const WM_APP_CAPTURE_DONE: u32 = WM_APP + 1;
+
+const CROPS: [&str; 4] = ["none", "window", "client", "dwm-frame"];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum GuiTarget {
@@ -109,6 +112,7 @@ struct GuiState {
     refresh: HWND,
     target: HWND,
     format: HWND,
+    crop: HWND,
     cursor: HWND,
     out: HWND,
     browse: HWND,
@@ -214,6 +218,7 @@ fn resize_controls(state: &GuiState) {
     let status_h = 22;
     let target_w = 110;
     let format_w = 90;
+    let crop_w = 110;
     let cursor_w = 130;
     let browse_w = 80;
     let capture_w = 92;
@@ -222,31 +227,16 @@ fn resize_controls(state: &GuiState) {
     let height = rc.bottom - rc.top;
 
     unsafe {
-        let _ = MoveWindow(state.refresh, pad, pad, refresh_w, button_h, true);
-        let _ = MoveWindow(
-            state.target,
-            pad + refresh_w + pad,
-            pad,
-            target_w,
-            180,
-            true,
-        );
-        let _ = MoveWindow(
-            state.format,
-            pad + refresh_w + pad + target_w + pad,
-            pad,
-            format_w,
-            180,
-            true,
-        );
-        let _ = MoveWindow(
-            state.cursor,
-            pad + refresh_w + pad + target_w + pad + format_w + pad,
-            pad,
-            cursor_w,
-            button_h,
-            true,
-        );
+        let mut x = pad;
+        let _ = MoveWindow(state.refresh, x, pad, refresh_w, button_h, true);
+        x += refresh_w + pad;
+        let _ = MoveWindow(state.target, x, pad, target_w, 180, true);
+        x += target_w + pad;
+        let _ = MoveWindow(state.format, x, pad, format_w, 180, true);
+        x += format_w + pad;
+        let _ = MoveWindow(state.crop, x, pad, crop_w, 180, true);
+        x += crop_w + pad;
+        let _ = MoveWindow(state.cursor, x, pad, cursor_w, button_h, true);
         let _ = MoveWindow(
             state.capture,
             width - pad - capture_w,
@@ -624,6 +614,21 @@ fn selected_format(state: &GuiState) -> ImageFormat {
     combo_selection(state.format, &ImageFormat::ALL)
 }
 
+fn selected_crop(state: &GuiState) -> &'static str {
+    match selected_target(state) {
+        GuiTarget::Window => combo_selection(state.crop, &CROPS),
+        GuiTarget::Monitor => "none",
+    }
+}
+
+/// Enables crop modes only for window targets, which provide the required rects.
+fn update_crop_enabled(state: &GuiState) {
+    let enabled = selected_target(state) == GuiTarget::Window;
+    unsafe {
+        let _ = EnableWindow(state.crop, enabled);
+    }
+}
+
 /// Whether the "Include cursor" checkbox is currently checked.
 fn cursor_included(state: &GuiState) -> bool {
     let checked = unsafe { SendMessageW(state.cursor, BM_GETCHECK, None, None) };
@@ -707,6 +712,7 @@ fn run_capture_process(
     target: CaptureTarget,
     out_path: &str,
     format: ImageFormat,
+    crop: &str,
     include_cursor: bool,
 ) -> Result<(), String> {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -751,6 +757,11 @@ fn run_capture_process(
     // Do not pass --format when it matches the CLI default; keeps argv minimal.
     if format != ImageFormat::default() {
         command.arg("--format").arg(format.as_str());
+    }
+
+    // Omit --crop when at the CLI default ("none").
+    if crop != "none" {
+        command.arg("--crop").arg(crop);
     }
 
     // Do not pass --cursor unless opted in; CLI excludes the cursor by default.
@@ -840,6 +851,7 @@ fn capture_selected(state: &mut GuiState) {
     }
 
     let format = selected_format(state);
+    let crop = selected_crop(state);
     let include_cursor = cursor_included(state);
 
     state.capturing = true;
@@ -855,7 +867,7 @@ fn capture_selected(state: &mut GuiState) {
     // HWND is not Send; carry raw bits and rebuild on the worker thread.
     let hwnd_raw = state.hwnd.0 as isize;
     std::thread::spawn(move || {
-        let result = run_capture_process(target, &out_path, format, include_cursor);
+        let result = run_capture_process(target, &out_path, format, crop, include_cursor);
         let (wparam, lparam): (usize, isize) = match result {
             Ok(()) => (1, 0),
             Err(err) => (0, Box::into_raw(Box::new(err)) as isize),
@@ -987,6 +999,7 @@ fn create_controls(state: &mut GuiState, hwnd: HWND) {
         ID_FORMAT,
         &ImageFormat::ALL.map(|f| f.as_str()),
     );
+    state.crop = create_combo(hwnd, instance, ID_CROP, &CROPS);
 
     state.cursor = create_child(
         hwnd,
@@ -1063,6 +1076,7 @@ fn create_controls(state: &mut GuiState, hwnd: HWND) {
     reload_windows(state);
     reload_monitors(state);
     populate_list(state);
+    update_crop_enabled(state);
     update_target_status(state);
 }
 
@@ -1114,6 +1128,7 @@ unsafe extern "system" fn wnd_proc(
                 } else if id == ID_TARGET && code == CBN_SELCHANGE as u16 {
                     remember_monitor_selection(state);
                     populate_list(state);
+                    update_crop_enabled(state);
                     update_target_status(state);
                     return LRESULT(0);
                 } else if id == ID_FORMAT && code == CBN_SELCHANGE as u16 {

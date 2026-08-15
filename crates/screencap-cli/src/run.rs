@@ -59,6 +59,10 @@ struct BootstrapOptions {
     no_log: bool,
 }
 
+fn is_opt_token(arg: &str) -> bool {
+    arg.starts_with('-')
+}
+
 /// Scans `argv` for global flags before clap runs so logging can start early.
 /// Mirrors the subset of flags that [`crate::cli::parse_args`] also accepts
 /// (`--log-dir`, `--log-level`, `--json`, `--no-log`).
@@ -85,12 +89,12 @@ fn pre_parse_bootstrap(argv: &[String]) -> BootstrapOptions {
     let mut i = 1usize;
     while i < argc {
         let a = &argv[i];
-        if a == "--log-dir" && i + 1 < argc {
+        if a == "--log-dir" && i + 1 < argc && !is_opt_token(&argv[i + 1]) {
             i += 1;
             b.log_dir = argv[i].clone();
         } else if let Some(value) = a.strip_prefix("--log-dir=") {
             b.log_dir = value.to_string();
-        } else if a == "--log-level" && i + 1 < argc {
+        } else if a == "--log-level" && i + 1 < argc && !is_opt_token(&argv[i + 1]) {
             i += 1;
             b.log_level = screencap_core::logging::parse_log_level(&argv[i]);
         } else if let Some(value) = a.strip_prefix("--log-level=") {
@@ -892,6 +896,27 @@ mod tests {
         ]));
         assert_eq!(b.log_dir, "C:\\logs");
         assert_eq!(b.log_level, LogLevel::Warn);
+    }
+
+    #[test]
+    fn pre_parse_bootstrap_log_dir_before_json_flag() {
+        let b = pre_parse_bootstrap(&argv(&["screencap", "cap", "--log-dir", "--json"]));
+        assert_eq!(b.log_dir, "./logs");
+        assert!(b.json);
+    }
+
+    #[test]
+    fn pre_parse_bootstrap_log_level_before_no_log_flag() {
+        let b = pre_parse_bootstrap(&argv(&["screencap", "cap", "--log-level", "--no-log"]));
+        assert_eq!(b.log_level, LogLevel::Info);
+        assert!(b.no_log);
+    }
+
+    #[test]
+    fn pre_parse_bootstrap_equals_log_dir_does_not_consume_json_token() {
+        let b = pre_parse_bootstrap(&argv(&["screencap", "cap", "--log-dir=--json", "--json"]));
+        assert_eq!(b.log_dir, "--json");
+        assert!(b.json);
     }
 
     #[test]

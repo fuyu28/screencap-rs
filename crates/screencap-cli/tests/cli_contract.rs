@@ -71,6 +71,44 @@ fn parse_failure_exits_2_without_json() {
 }
 
 #[test]
+fn json_parse_failure_with_malformed_log_dir_emits_json() {
+    let workdir = std::env::temp_dir().join(format!("screencap-bootstrap-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&workdir);
+    std::fs::create_dir_all(&workdir).unwrap();
+    let json_as_dir = workdir.join("--json");
+
+    let out = Command::new(BIN)
+        .current_dir(&workdir)
+        .args([
+            "cap",
+            "--log-dir",
+            "--json",
+            "--method",
+            "wgc-window",
+            "--foreground",
+            "--format",
+            "not-a-format",
+            "--out",
+            unique_out().to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to spawn screencap-cli");
+
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        !json_as_dir.exists(),
+        "bootstrap must not treat --json as --log-dir value"
+    );
+
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let v: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["ok"], Value::Bool(false));
+    assert_eq!(v["command"], Value::String("unknown".to_string()));
+
+    let _ = std::fs::remove_dir_all(&workdir);
+}
+
+#[test]
 fn json_parse_failure_emits_unknown_command_shape() {
     let out_path = unique_out();
     let out = run(&[

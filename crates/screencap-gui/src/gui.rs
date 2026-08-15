@@ -8,12 +8,15 @@ use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::{COLOR_WINDOW, HBRUSH, UpdateWindow};
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Controls::Dialogs::{
-    GetSaveFileNameW, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+use windows::Win32::Foundation::{
+    HINSTANCE, HWND, LPARAM, LRESULT, RECT, RPC_E_CHANGED_MODE, WPARAM,
 };
+use windows::Win32::Graphics::Gdi::{COLOR_WINDOW, HBRUSH, UpdateWindow};
+use windows::Win32::System::Com::{
+    CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+    CoTaskMemFree, CoUninitialize,
+};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{
     BST_CHECKED, ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx,
     LIST_VIEW_ITEM_STATE_FLAGS, LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW, LVIF_PARAM, LVIF_TEXT,
@@ -26,6 +29,10 @@ use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
+use windows::Win32::UI::Shell::{
+    FOS_FORCEFILESYSTEM, FOS_PATHMUSTEXIST, FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog,
+    IShellItem, SHCreateItemFromParsingName, SIGDN_FILESYSPATH,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     BM_GETCHECK, BS_AUTOCHECKBOX, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, CBN_SELCHANGE,
     CBS_DROPDOWNLIST, CREATESTRUCTW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
@@ -37,14 +44,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_NCCREATE, WM_NOTIFY, WM_SIZE, WNDCLASSW, WS_CHILD, WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW,
     WS_VISIBLE,
 };
-use windows::core::{HSTRING, PCWSTR, PWSTR, w};
+use windows::core::{HRESULT, HSTRING, PCWSTR, PWSTR, w};
 
 use screencap_core::encode_png::{normalize_path_separators, output_parent_dir, real_output_path};
 use screencap_core::monitor_enum::enumerate_monitors;
 use screencap_core::types::{ImageFormat, MonitorInfo, Rect, WindowInfo};
-use screencap_core::util::{
-    build_timestamp_for_filename, utf8_from_wide, validate_output_path, wide_from_utf8,
-};
+use screencap_core::util::{build_timestamp_for_filename, validate_output_path, wide_from_utf8};
 use screencap_core::window_enum::{enumerate_windows, get_window_text_utf8};
 
 const ID_LIST: u16 = 1001;
@@ -142,16 +147,6 @@ fn control_id(id: u16) -> HMENU {
 fn to_wide(s: &str) -> Vec<u16> {
     let mut v = wide_from_utf8(s);
     v.push(0);
-    v
-}
-
-/// NUL-padded wide buffer of fixed `len` for Win32 dialog structures (e.g. `OPENFILENAMEW`).
-fn to_wide_fixed(s: &str, len: usize) -> Vec<u16> {
-    let mut v = wide_from_utf8(s);
-    if v.len() > len - 1 {
-        v.truncate(len - 1);
-    }
-    v.resize(len, 0);
     v
 }
 
@@ -546,54 +541,72 @@ fn update_target_status(state: &GuiState) {
     }
 }
 
-/// Builds the Save-dialog filter for the selected format, keeping the
-/// All-files entry.
-fn build_save_filter(format: ImageFormat) -> Vec<u16> {
-    let ext = format.extension();
-    let image_entry = format!("{} image (*.{ext})", ext.to_uppercase());
-    let image_pattern = format!("*.{ext}");
-    let mut buf = Vec::new();
-    for part in [
-        image_entry.as_str(),
-        image_pattern.as_str(),
-        "All files (*.*)",
-        "*.*",
-    ] {
-        buf.extend(wide_from_utf8(part));
-        buf.push(0);
-    }
-    buf.push(0);
-    buf
+/// Calls `CoUninitialize` on drop only if this call to `CoInitializeEx`
+/// actually initialized COM.
+struct CoInitGuard {
+    active: bool,
 }
 
-/// Opens the save-file dialog and writes the chosen path into the output edit control.
-fn browse_output(state: &mut GuiState) {
-    let current = get_window_text_utf8(state.out);
-    let mut file_buf = to_wide_fixed(&current, 260);
-    let format = selected_format(state);
-    let filter = build_save_filter(format);
-    let def_ext = to_wide(format.extension());
+impl Drop for CoInitGuard {
+    fn drop(&mut self) {
+        if self.active {
+            unsafe { CoUninitialize() };
+        }
+    }
+}
 
-    let mut ofn = OPENFILENAMEW {
-        lStructSize: size_of::<OPENFILENAMEW>() as u32,
-        hwndOwner: state.hwnd,
-        lpstrFilter: PCWSTR(filter.as_ptr()),
-        lpstrFile: PWSTR(file_buf.as_mut_ptr()),
-        nMaxFile: file_buf.len() as u32,
-        lpstrDefExt: PCWSTR(def_ext.as_ptr()),
-        Flags: OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST,
-        ..Default::default()
+/// Opens a folder picker and returns the chosen directory, or `None` on cancel/error.
+fn pick_output_directory(owner: HWND, initial_dir: &std::path::Path) -> Option<PathBuf> {
+    let mut hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    let mut need_uninit = hr.is_ok();
+    if hr == RPC_E_CHANGED_MODE {
+        need_uninit = false;
+        hr = HRESULT(0);
+    }
+    if hr.is_err() {
+        return None;
+    }
+    let _co_guard = CoInitGuard {
+        active: need_uninit,
     };
 
-    if unsafe { GetSaveFileNameW(&mut ofn) }.as_bool() {
-        let end = file_buf
-            .iter()
-            .position(|&c| c == 0)
-            .unwrap_or(file_buf.len());
-        let path = utf8_from_wide(&file_buf[..end]);
-        set_window_text(state.out, &path);
-        sync_output_extension(state);
+    let dialog: IFileOpenDialog =
+        unsafe { CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER) }.ok()?;
+    let options = unsafe { dialog.GetOptions() }.ok()?;
+    unsafe {
+        dialog.SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST)
     }
+    .ok()?;
+
+    if !initial_dir.as_os_str().is_empty()
+        && let Ok(folder) = unsafe {
+            SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(initial_dir), None)
+        }
+    {
+        let _ = unsafe { dialog.SetFolder(&folder) };
+    }
+
+    unsafe { dialog.Show(Some(owner)) }.ok()?;
+    let item = unsafe { dialog.GetResult() }.ok()?;
+    let name = unsafe { item.GetDisplayName(SIGDN_FILESYSPATH) }.ok()?;
+    let path = unsafe { name.to_string() }.ok().map(PathBuf::from);
+    unsafe { CoTaskMemFree(Some(name.0 as *const _)) };
+    path
+}
+
+/// Opens the folder picker and writes a fresh timestamp path under the chosen directory.
+fn browse_output(state: &mut GuiState) {
+    let current = get_window_text_utf8(state.out);
+    let initial_dir = PathBuf::from(&current)
+        .parent()
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+    let Some(dir) = pick_output_directory(state.hwnd, &initial_dir) else {
+        return;
+    };
+    set_window_text(state.out, &output_path_in_dir(&dir, selected_format(state)));
 }
 
 /// Returns the item matching the combobox's current selection, falling back
@@ -636,8 +649,7 @@ fn cursor_included(state: &GuiState) -> bool {
 }
 
 /// Rewrites the output-path extension to match the selected format so the
-/// default timestamp filename tracks the format combobox. Called after Browse
-/// because the save dialog may leave a mismatched extension.
+/// default timestamp filename tracks the format combobox.
 fn sync_output_extension(state: &GuiState) {
     let current = get_window_text_utf8(state.out);
     if current.is_empty() {

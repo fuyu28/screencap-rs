@@ -216,18 +216,11 @@ pub fn save_image_wic(
         }
     }
 
-    let mut hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-    let mut need_uninit = hr.is_ok();
-    if hr == RPC_E_CHANGED_MODE {
-        need_uninit = false;
-        hr = HRESULT(0);
-    }
-    if hr.is_err() {
+    let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+    if hr.is_err() && hr != RPC_E_CHANGED_MODE {
         return Err(hr_error("CoInitializeEx failed", hr));
     }
-    let _co_guard = CoInitGuard {
-        active: need_uninit,
-    };
+    let _co_guard = CoInitGuard { active: hr.is_ok() };
 
     let factory: IWICImagingFactory =
         unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }

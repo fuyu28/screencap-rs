@@ -47,7 +47,7 @@ impl Logger {
     ) -> io::Result<()> {
         self.min_level.store(level as u8, Ordering::Relaxed);
 
-        let mut state = self.inner.lock().unwrap();
+        let state = self.inner.get_mut().unwrap();
 
         let dir = PathBuf::from(log_dir_utf8);
         fs::create_dir_all(&dir)?;

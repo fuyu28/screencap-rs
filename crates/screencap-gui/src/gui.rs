@@ -5,7 +5,7 @@
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::os::windows::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -174,7 +174,7 @@ fn info_box(hwnd: HWND, text: &str) {
 }
 
 /// Builds `screenshot_<timestamp>.<ext>` under `dir` (or bare if `dir` is empty).
-fn output_path_in_dir(dir: &std::path::Path, format: ImageFormat) -> String {
+fn output_path_in_dir(dir: &Path, format: ImageFormat) -> String {
     let filename = format!(
         "screenshot_{}.{}",
         build_timestamp_for_filename(),
@@ -195,11 +195,8 @@ fn default_output_path() -> String {
 
 /// Same directory as `current`, with a fresh timestamp filename and `format` extension.
 fn next_output_path(current: &str, format: ImageFormat) -> String {
-    let parent = PathBuf::from(current)
-        .parent()
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    output_path_in_dir(&parent, format)
+    let parent = Path::new(current).parent().unwrap_or_else(|| Path::new(""));
+    output_path_in_dir(parent, format)
 }
 
 /// Lays out child controls to fill the main window client area (`WM_SIZE`).
@@ -787,24 +784,19 @@ fn capture_selected(state: &mut GuiState) {
 
     let target = match selected_target(state) {
         GuiTarget::Window => {
-            let idx = match selected_list_index(state) {
-                Some(idx) if idx < state.windows.len() => idx,
-                _ => {
-                    info_box(state.hwnd, "Select a window first.");
-                    return;
-                }
+            let Some(window) = selected_list_index(state).and_then(|idx| state.windows.get(idx))
+            else {
+                info_box(state.hwnd, "Select a window first.");
+                return;
             };
-            CaptureTarget::Window(state.windows[idx].hwnd as usize)
+            CaptureTarget::Window(window.hwnd as usize)
         }
         GuiTarget::Monitor => {
-            let idx = match selected_list_index(state) {
-                Some(idx) if idx < state.monitors.len() => idx,
-                _ => {
-                    info_box(state.hwnd, "Select a monitor first.");
-                    return;
-                }
+            let Some(index) = selected_monitor_index(state) else {
+                info_box(state.hwnd, "Select a monitor first.");
+                return;
             };
-            CaptureTarget::Monitor(state.monitors[idx].index)
+            CaptureTarget::Monitor(index)
         }
     };
     if let CaptureTarget::Monitor(index) = &target {

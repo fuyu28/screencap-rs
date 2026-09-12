@@ -383,34 +383,38 @@ fn format_rect(rect: &Rect) -> String {
     )
 }
 
-/// Clears ListView rows and inserts one row per cached window.
-fn populate_window_rows(state: &GuiState) {
+/// Removes every ListView row.
+fn clear_list_rows(list: HWND) {
+    unsafe {
+        SendMessageW(list, LVM_DELETEALLITEMS, Some(WPARAM(0)), Some(LPARAM(0)));
+    }
+}
+
+/// Inserts a ListView row with its cache index stored in `LVIF_PARAM`.
+fn insert_list_row(list: HWND, index: usize, text: &str) {
+    let mut text_w = to_wide(text);
+    let item = LVITEMW {
+        mask: LVIF_TEXT | LVIF_PARAM,
+        iItem: index as i32,
+        pszText: PWSTR(text_w.as_mut_ptr()),
+        lParam: LPARAM(index as isize),
+        ..Default::default()
+    };
     unsafe {
         SendMessageW(
-            state.list,
-            LVM_DELETEALLITEMS,
+            list,
+            LVM_INSERTITEMW,
             Some(WPARAM(0)),
-            Some(LPARAM(0)),
+            Some(LPARAM(&item as *const LVITEMW as isize)),
         );
     }
+}
 
+/// Clears ListView rows and inserts one row per cached window.
+fn populate_window_rows(state: &GuiState) {
+    clear_list_rows(state.list);
     for (i, w) in state.windows.iter().enumerate() {
-        let mut title_w = to_wide(&w.title);
-        let item = LVITEMW {
-            mask: LVIF_TEXT | LVIF_PARAM,
-            iItem: i as i32,
-            pszText: PWSTR(title_w.as_mut_ptr()),
-            lParam: LPARAM(i as isize),
-            ..Default::default()
-        };
-        unsafe {
-            SendMessageW(
-                state.list,
-                LVM_INSERTITEMW,
-                Some(WPARAM(0)),
-                Some(LPARAM(&item as *const LVITEMW as isize)),
-            );
-        }
+        insert_list_row(state.list, i, &w.title);
         set_item_text(state.list, i as i32, 1, &w.class_name);
         set_item_text(state.list, i as i32, 2, &w.pid.to_string());
         set_item_text(state.list, i as i32, 3, &format_rect(&w.rect));
@@ -419,32 +423,9 @@ fn populate_window_rows(state: &GuiState) {
 
 /// Clears ListView rows and inserts one row per cached monitor.
 fn populate_monitor_rows(state: &GuiState, select: Option<usize>) {
-    unsafe {
-        SendMessageW(
-            state.list,
-            LVM_DELETEALLITEMS,
-            Some(WPARAM(0)),
-            Some(LPARAM(0)),
-        );
-    }
-
+    clear_list_rows(state.list);
     for (i, m) in state.monitors.iter().enumerate() {
-        let mut index_w = to_wide(&m.index.to_string());
-        let item = LVITEMW {
-            mask: LVIF_TEXT | LVIF_PARAM,
-            iItem: i as i32,
-            pszText: PWSTR(index_w.as_mut_ptr()),
-            lParam: LPARAM(i as isize),
-            ..Default::default()
-        };
-        unsafe {
-            SendMessageW(
-                state.list,
-                LVM_INSERTITEMW,
-                Some(WPARAM(0)),
-                Some(LPARAM(&item as *const LVITEMW as isize)),
-            );
-        }
+        insert_list_row(state.list, i, &m.index.to_string());
         set_item_text(state.list, i as i32, 1, &m.name);
         set_item_text(
             state.list,

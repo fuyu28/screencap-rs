@@ -101,3 +101,31 @@ fn json_parse_failure_emits_unknown_command_shape() {
         assert!(obj[key].is_null());
     }
 }
+
+#[test]
+fn invalid_function_keys_return_json_validation_errors() {
+    for spec in ["ctrl+f0", "ctrl+f-2147483648"] {
+        let out = run(&[
+            "cap",
+            "--method",
+            "wgc-window",
+            "--foreground",
+            "--out",
+            "unused.png",
+            "--hotkey",
+            spec,
+            "--json",
+            "--no-log",
+        ]);
+        assert_eq!(out.status.code(), Some(2), "{spec}");
+        let value: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"]["where"], "ParseArgs");
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("invalid --hotkey")
+        );
+    }
+}

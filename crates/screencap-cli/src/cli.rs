@@ -237,7 +237,7 @@ fn parse_function_key(token: &str) -> Option<u32> {
     let n = token.strip_prefix('f')?.parse::<i32>().ok()?;
     (1..=24)
         .contains(&n)
-        .then_some(VK_F1.0 as u32 + (n - 1) as u32)
+        .then(|| VK_F1.0 as u32 + (n - 1) as u32)
 }
 
 /// Parses a `--hotkey` spec (`ctrl+shift+s`, `alt+f9`, …) into Win32 modifiers and VK.
@@ -725,6 +725,26 @@ mod tests {
         bad.extend(args(&["--force-alpha", "128"]));
         let err = parse_args(&bad).expect_err("non-255 force-alpha should fail");
         assert_eq!(err.kind(), ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn function_keys_accept_both_boundaries() {
+        assert_eq!(parse_function_key("f1"), Some(VK_F1.0 as u32));
+        assert_eq!(parse_function_key("f24"), Some(VK_F1.0 as u32 + 23));
+    }
+
+    #[test]
+    fn function_keys_reject_out_of_range_values_without_panicking() {
+        for token in [
+            "f0",
+            "f25",
+            "f-1",
+            "f-2147483648",
+            "f2147483647",
+            "f2147483648",
+        ] {
+            assert_eq!(parse_function_key(token), None, "{token}");
+        }
     }
 
     #[test]

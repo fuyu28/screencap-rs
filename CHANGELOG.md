@@ -9,6 +9,15 @@ behavior changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- WGC: balance Windows Runtime initialization on all capture exits and close
+  the frame pool when session creation fails.
+- CLI: reject out-of-range function keys such as `ctrl+f0` without panicking
+  in debug builds; return the normal validation error and exit code 2.
+- GUI: keep capture results in an owned channel so an undelivered completion
+  message cannot leak a raw error-string allocation.
+
 ## [0.4.1] - 2026-07-19
 
 ### Added

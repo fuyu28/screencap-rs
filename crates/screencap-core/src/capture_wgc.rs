@@ -23,7 +23,7 @@ use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
 };
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
-use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
+use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize};
 use windows::core::{IInspectable, Interface};
 
 use crate::d3d11_copy::{copy_texture_to_image, create_d3d11_device};
@@ -33,6 +33,23 @@ use crate::types::{CaptureContext, ErrorInfo, ImageBuffer, LogLevel, Rect};
 const MAX_FRAMES: usize = 5;
 const FRAME_POOL_BUFFERS: i32 = 1;
 const FRAME_POOL_PIXEL_FORMAT: DirectXPixelFormat = DirectXPixelFormat::B8G8R8A8UIntNormalized;
+
+/// Balances Windows Runtime initialization on the current thread.
+struct RoInitGuard(std::marker::PhantomData<*mut ()>);
+
+impl RoInitGuard {
+    fn new() -> Result<Self, ErrorInfo> {
+        // S_FALSE also increments the initialization count and needs RoUninitialize.
+        unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.map_err(|e| to_err(e, "CaptureWithWgc"))?;
+        Ok(Self(std::marker::PhantomData))
+    }
+}
+
+impl Drop for RoInitGuard {
+    fn drop(&mut self) {
+        unsafe { RoUninitialize() };
+    }
+}
 
 fn to_err(e: windows::core::Error, where_: &str) -> ErrorInfo {
     ErrorInfo::with_hresult(e.message(), where_, e.code().0 as u32)
@@ -308,9 +325,7 @@ fn run_capture_loop(
 pub fn capture_with_wgc(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> {
     let logger = ctx.logger;
 
-    // Do not treat RoInitialize S_FALSE (already initialized on this thread) as
-    // failure; only a conflicting apartment type is propagated.
-    unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.map_err(|e| to_err(e, "CaptureWithWgc"))?;
+    let _ro_guard = RoInitGuard::new()?;
 
     let supported =
         GraphicsCaptureSession::IsSupported().map_err(|e| to_err(e, "CaptureWithWgc"))?;
@@ -350,43 +365,45 @@ pub fn capture_with_wgc(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> 
     )
     .map_err(|e| to_err(e, "CaptureWithWgc"))?;
 
-    let session = frame_pool
+    let result = frame_pool
         .CreateCaptureSession(&item)
-        .map_err(|e| to_err(e, "CaptureWithWgc"))?;
+        .map_err(|e| to_err(e, "CaptureWithWgc"))
+        .and_then(|session| {
+            // Do not call SetIsCursorCaptureEnabled when the cursor is requested: WGC
+            // includes it by default and the property is missing on pre-1903 builds.
+            // Exclusion uses the property and fails clearly where it is unavailable.
+            //
+            // Do not early-return before Close: funnel property failure through the
+            // and_then chain below so session/frame_pool always close on every path.
+            let result = if ctx.cap.include_cursor {
+                Ok(())
+            } else {
+                session.SetIsCursorCaptureEnabled(false).map_err(|e| {
+                    to_err_with(
+                        "SetIsCursorCaptureEnabled failed (cursor exclusion requires Windows 10 version 1903 / build 18362 or later; pass --cursor to include the cursor instead)",
+                        "CaptureWithWgc",
+                        &e,
+                    )
+                })
+            }
+            .and_then(|()| {
+                run_capture_loop(
+                    ctx,
+                    logger,
+                    &WgcResources {
+                        frame_pool: &frame_pool,
+                        session: &session,
+                        winrt_device: &winrt_device,
+                        d3d_device: &d3d_device,
+                        d3d_context: &d3d_context,
+                    },
+                    size,
+                )
+            });
 
-    // Do not call SetIsCursorCaptureEnabled when the cursor is requested: WGC
-    // includes it by default and the property is missing on pre-1903 builds.
-    // Exclusion uses the property and fails clearly where it is unavailable.
-    //
-    // Do not early-return before Close: funnel property failure through the
-    // and_then chain below so session/frame_pool always close on every path.
-    let result = if ctx.cap.include_cursor {
-        Ok(())
-    } else {
-        session.SetIsCursorCaptureEnabled(false).map_err(|e| {
-            to_err_with(
-                "SetIsCursorCaptureEnabled failed (cursor exclusion requires Windows 10 version 1903 / build 18362 or later; pass --cursor to include the cursor instead)",
-                "CaptureWithWgc",
-                &e,
-            )
-        })
-    }
-    .and_then(|()| {
-        run_capture_loop(
-            ctx,
-            logger,
-            &WgcResources {
-                frame_pool: &frame_pool,
-                session: &session,
-                winrt_device: &winrt_device,
-                d3d_device: &d3d_device,
-                d3d_context: &d3d_context,
-            },
-            size,
-        )
-    });
-
-    let _ = session.Close();
+            let _ = session.Close();
+            result
+        });
     let _ = frame_pool.Close();
 
     result
@@ -395,6 +412,30 @@ pub fn capture_with_wgc(ctx: &CaptureContext) -> Result<ImageBuffer, ErrorInfo> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn runtime_guards_balance_nested_initialization() {
+        use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
+        use windows::Win32::System::Com::{
+            COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize,
+        };
+
+        std::thread::spawn(|| {
+            let outer = RoInitGuard::new().unwrap();
+            let inner = RoInitGuard::new().unwrap();
+            drop(inner);
+            assert_eq!(
+                unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) },
+                RPC_E_CHANGED_MODE,
+            );
+            drop(outer);
+            unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.unwrap();
+            unsafe { CoUninitialize() };
+        })
+        .join()
+        .unwrap();
+    }
 
     fn solid(width: i32, height: i32, pixel: [u8; 4]) -> ImageBuffer {
         let mut bgra = Vec::with_capacity((width * height * 4) as usize);

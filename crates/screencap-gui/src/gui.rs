@@ -7,6 +7,7 @@ use std::mem::size_of;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::mpsc;
 
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{COLOR_WINDOW, HBRUSH, UpdateWindow};
@@ -71,10 +72,8 @@ const MONITOR_COLUMNS: [(&str, i32); 5] = [
 ];
 
 /// Posted from the capture worker thread to the GUI thread once
-/// screencap-cli.exe has finished (or failed to start). `WPARAM` is 1 for
-/// success, 0 for failure; on failure `LPARAM` carries a pointer to a
-/// heap-allocated `String` (boxed via `Box::into_raw`) with the exact error
-/// text, which the handler reclaims with `Box::from_raw`.
+/// screencap-cli.exe has finished (or failed to start). The result is owned
+/// by the channel in [`GuiState::capture_result`].
 const WM_APP_CAPTURE_DONE: u32 = WM_APP + 1;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -122,9 +121,8 @@ struct GuiState {
     /// Last chosen monitor `index`, kept across Window/Monitor target switches
     /// so returning to Monitor restores the same row (combo used to keep this).
     preferred_monitor: Option<i32>,
-    /// True while a capture worker thread is in flight; further capture
-    /// requests are ignored until it completes.
-    capturing: bool,
+    /// Present while a capture worker is in flight; owns its completion result.
+    capture_result: Option<mpsc::Receiver<Result<(), String>>>,
     /// Output path for the in-flight capture, stashed here so the
     /// `WM_APP_CAPTURE_DONE` handler can build the "Saved: ..." status text
     /// without threading it through the posted message.
@@ -778,7 +776,7 @@ fn run_capture_process(
 /// Completion is reported back via `WM_APP_CAPTURE_DONE`; see
 /// [`wnd_proc`]'s handler for that message.
 fn capture_selected(state: &mut GuiState) {
-    if state.capturing {
+    if state.capture_result.is_some() {
         return;
     }
 
@@ -834,7 +832,8 @@ fn capture_selected(state: &mut GuiState) {
     let format = selected_format(state);
     let include_cursor = cursor_included(state);
 
-    state.capturing = true;
+    let (tx, rx) = mpsc::channel();
+    state.capture_result = Some(rx);
     state.pending_out = out_path.clone();
     unsafe {
         let _ = EnableWindow(state.capture, false);
@@ -848,52 +847,55 @@ fn capture_selected(state: &mut GuiState) {
     let hwnd_raw = state.hwnd.0 as isize;
     std::thread::spawn(move || {
         let result = run_capture_process(target, &out_path, format, include_cursor);
-        let (wparam, lparam): (usize, isize) = match result {
-            Ok(()) => (1, 0),
-            Err(err) => (0, Box::into_raw(Box::new(err)) as isize),
-        };
+        // A raw LPARAM payload would leak if posting fails or the window closes.
+        if tx.send(result).is_err() {
+            return;
+        }
         let hwnd = HWND(hwnd_raw as *mut c_void);
         // Do not block the UI thread on CLI I/O; PostMessageW defers completion to wnd_proc.
-        let _ = unsafe {
-            PostMessageW(
-                Some(hwnd),
-                WM_APP_CAPTURE_DONE,
-                WPARAM(wparam),
-                LPARAM(lparam),
-            )
-        };
+        let _ = unsafe { PostMessageW(Some(hwnd), WM_APP_CAPTURE_DONE, WPARAM(0), LPARAM(0)) };
     });
+}
+
+/// Takes a ready capture result and returns the GUI to its idle state.
+fn take_capture_result(state: &mut GuiState) -> Option<Result<(), String>> {
+    let result = state.capture_result.as_ref()?.try_recv().ok()?;
+    state.capture_result = None;
+    Some(result)
 }
 
 /// Handles `WM_APP_CAPTURE_DONE`, posted by the worker thread spawned in
 /// [`capture_selected`]. Restores the UI to its idle state and shows the
 /// same success/failure text the old synchronous path produced.
-fn on_capture_done(state: &mut GuiState, wparam: WPARAM, lparam: LPARAM) {
-    state.capturing = false;
+fn on_capture_done(state: &mut GuiState) {
+    let Some(result) = take_capture_result(state) else {
+        return;
+    };
     unsafe {
         let _ = EnableWindow(state.capture, true);
     }
 
-    if wparam.0 == 1 {
-        let real = real_output_path(&state.pending_out);
-        set_status(state, &format!("Saved: {real}"));
-        // Advance the filename so the next capture does not overwrite this one.
-        set_window_text(
-            state.out,
-            &next_output_path(&state.pending_out, selected_format(state)),
-        );
-        return;
-    }
-
-    let err = *unsafe { Box::from_raw(lparam.0 as *mut String) };
-    set_status(state, &err);
-    unsafe {
-        MessageBoxW(
-            Some(state.hwnd),
-            &HSTRING::from(err.as_str()),
-            w!("screencap"),
-            MB_ICONERROR,
-        );
+    match result {
+        Ok(()) => {
+            let real = real_output_path(&state.pending_out);
+            set_status(state, &format!("Saved: {real}"));
+            // Advance the filename so the next capture does not overwrite this one.
+            set_window_text(
+                state.out,
+                &next_output_path(&state.pending_out, selected_format(state)),
+            );
+        }
+        Err(err) => {
+            set_status(state, &err);
+            unsafe {
+                MessageBoxW(
+                    Some(state.hwnd),
+                    &HSTRING::from(err.as_str()),
+                    w!("screencap"),
+                    MB_ICONERROR,
+                );
+            }
+        }
     }
 }
 
@@ -1132,7 +1134,7 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_APP_CAPTURE_DONE => {
             if let Some(state) = unsafe { state_ptr.as_mut() } {
-                on_capture_done(state, wparam, lparam);
+                on_capture_done(state);
             }
             return LRESULT(0);
         }
@@ -1201,8 +1203,42 @@ pub fn run_gui() -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_cli_error_message, next_output_path, restore_monitor_selection};
+    use super::{
+        GuiState, extract_cli_error_message, next_output_path, restore_monitor_selection,
+        take_capture_result,
+    };
     use screencap_core::types::{ImageFormat, MonitorInfo, Rect};
+    use std::sync::mpsc;
+
+    #[test]
+    fn pending_capture_survives_an_early_notification() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = GuiState {
+            capture_result: Some(rx),
+            ..Default::default()
+        };
+        assert_eq!(take_capture_result(&mut state), None);
+        assert!(state.capture_result.is_some());
+        tx.send(Ok(())).unwrap();
+        assert_eq!(take_capture_result(&mut state), Some(Ok(())));
+        assert!(state.capture_result.is_none());
+        assert_eq!(take_capture_result(&mut state), None);
+    }
+
+    #[test]
+    fn capture_failure_preserves_the_worker_error() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = GuiState {
+            capture_result: Some(rx),
+            ..Default::default()
+        };
+        tx.send(Err("capture failed".to_string())).unwrap();
+        assert_eq!(
+            take_capture_result(&mut state),
+            Some(Err("capture failed".to_string())),
+        );
+        assert!(state.capture_result.is_none());
+    }
 
     fn monitor(index: i32, primary: bool) -> MonitorInfo {
         MonitorInfo {

@@ -129,3 +129,29 @@ fn invalid_function_keys_return_json_validation_errors() {
         );
     }
 }
+
+#[test]
+fn missing_log_option_values_preserve_json_errors() {
+    for option in ["--log-dir", "--log-level"] {
+        let out = run(&["list", "windows", option, "--json", "--no-log"]);
+        assert_eq!(out.status.code(), Some(2));
+        let value: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["command"], "unknown");
+        assert_eq!(value["error"]["where"], "ParseArgs");
+    }
+}
+
+#[test]
+fn missing_log_dir_value_preserves_no_log_without_filesystem_side_effects() {
+    let dir = std::env::temp_dir().join(format!("screencap-no-log-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let out = Command::new(BIN)
+        .args(["list", "windows", "--log-dir", "--no-log"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    std::fs::remove_dir(dir).unwrap();
+}

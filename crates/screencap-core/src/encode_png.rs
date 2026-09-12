@@ -1,7 +1,10 @@
 //! Image encoding through WIC. PNG is written as 32bpp BGRA; JPEG is converted
 //! to 24bpp BGR (JPEG has no alpha) with a configurable quality.
 
-use windows::Win32::Foundation::{CloseHandle, GENERIC_WRITE, HANDLE, RPC_E_CHANGED_MODE};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS, GENERIC_WRITE, HANDLE,
+    RPC_E_CHANGED_MODE, STG_E_FILEALREADYEXISTS,
+};
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_ContainerFormatJpeg, GUID_ContainerFormatPng,
     GUID_WICPixelFormat24bppBGR, GUID_WICPixelFormat32bppBGRA, IWICImagingFactory,
@@ -15,9 +18,11 @@ use windows::Win32::Storage::FileSystem::{
 use windows::Win32::System::Com::StructuredStorage::{IPropertyBag2, PROPBAG2};
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
+    IStream, STGM_FAILIFTHERE, STGM_SHARE_DENY_WRITE, STGM_WRITE,
 };
 use windows::Win32::System::Variant::{VARIANT, VARIANT_0_0, VARIANT_0_0_0, VT_R4};
-use windows::core::{Error as WinError, HRESULT, PCWSTR, PWSTR};
+use windows::Win32::UI::Shell::SHCreateStreamOnFileEx;
+use windows::core::{Error as WinError, HRESULT, Interface, PCWSTR, PWSTR};
 
 use crate::types::{ErrorInfo, ImageBuffer, ImageFormat};
 use crate::util::wide_from_utf8;
@@ -143,6 +148,48 @@ fn win_error(message: &str, e: WinError) -> ErrorInfo {
     ErrorInfo::with_hresult(message, WHERE, e.code().0 as u32)
 }
 
+/// Creates an output stream, refusing an existing file when overwrite is disabled.
+fn create_output_stream(
+    factory: &IWICImagingFactory,
+    path: PCWSTR,
+    overwrite: bool,
+) -> Result<IStream, ErrorInfo> {
+    if overwrite {
+        let stream =
+            unsafe { factory.CreateStream() }.map_err(|e| win_error("CreateStream failed", e))?;
+        unsafe { stream.InitializeFromFilename(path, GENERIC_WRITE.0) }
+            .map_err(|e| win_error("InitializeFromFilename failed", e))?;
+        return stream
+            .cast()
+            .map_err(|e| win_error("QueryInterface IStream failed", e));
+    }
+
+    // An attributes check alone races with another writer. FAILIFTHERE + fCreate
+    // uses CREATE_NEW semantics instead of truncating a file created after that check.
+    unsafe {
+        SHCreateStreamOnFileEx(
+            path,
+            (STGM_WRITE | STGM_SHARE_DENY_WRITE | STGM_FAILIFTHERE).0,
+            0,
+            true,
+            None,
+        )
+    }
+    .map_err(|e| {
+        if [
+            HRESULT::from_win32(ERROR_FILE_EXISTS.0),
+            HRESULT::from_win32(ERROR_ALREADY_EXISTS.0),
+            STG_E_FILEALREADYEXISTS,
+        ]
+        .contains(&e.code())
+        {
+            ErrorInfo::new("output exists (use --overwrite)", WHERE)
+        } else {
+            win_error("InitializeFromFilename failed", e)
+        }
+    })
+}
+
 /// Sets the JPEG encoder's `ImageQuality` option (a float in `0.0..=1.0`) on
 /// the property bag returned by `CreateNewFrame`, before the frame is
 /// initialized. `quality` is the 1-100 CLI value.
@@ -226,14 +273,10 @@ pub fn save_image_wic(
         unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }
             .map_err(|e| win_error("CoCreateInstance IWICImagingFactory failed", e))?;
 
-    let stream =
-        unsafe { factory.CreateStream() }.map_err(|e| win_error("CreateStream failed", e))?;
+    let stream = create_output_stream(&factory, wide_path, overwrite)?;
 
-    unsafe { stream.InitializeFromFilename(wide_path, GENERIC_WRITE.0) }
-        .map_err(|e| win_error("InitializeFromFilename failed", e))?;
-
-    // Do not leave a partial file on encode failure: InitializeFromFilename
-    // already truncated the path and a 0-byte file would block retry without overwrite.
+    // Do not leave a partial file on encode failure: opening the stream already
+    // created/truncated the path and a 0-byte file would block retry without overwrite.
     let container = match format {
         ImageFormat::Png => &GUID_ContainerFormatPng,
         ImageFormat::Jpg => &GUID_ContainerFormatJpeg,
@@ -423,6 +466,81 @@ mod tests {
         assert!(path.exists(), "expected {path:?} to exist");
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn create_output_stream_rejects_a_file_created_after_preflight() {
+        let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        assert!(hr.is_ok() || hr == RPC_E_CHANGED_MODE);
+        let _guard = CoInitGuard { active: hr.is_ok() };
+        let factory: IWICImagingFactory =
+            unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }
+                .unwrap();
+        let path = std::env::temp_dir().join(format!("screencap_race_{}.png", std::process::id()));
+        let mut wide = wide_from_utf8(&path.to_string_lossy());
+        wide.push(0);
+        let wide = PCWSTR(wide.as_ptr());
+        assert_eq!(unsafe { GetFileAttributesW(wide) }, INVALID_FILE_ATTRIBUTES);
+        std::fs::write(&path, b"existing image").unwrap();
+
+        let err = create_output_stream(&factory, wide, false).unwrap_err();
+        assert_eq!(err.message, "output exists (use --overwrite)");
+        assert_eq!(std::fs::read(&path).unwrap(), b"existing image");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn exclusive_creation_preserves_png_bytes_and_rejects_overwrite() {
+        let dir = std::env::temp_dir();
+        let original = dir.join(format!("screencap_png_original_{}.png", std::process::id()));
+        let exclusive = dir.join(format!(
+            "screencap_png_exclusive_{}.png",
+            std::process::id()
+        ));
+        let img = noisy_image(16, 16, 64);
+        save_image_wic(&img, &original.to_string_lossy(), true, ImageFormat::Png, 0).unwrap();
+        save_image_wic(
+            &img,
+            &exclusive.to_string_lossy(),
+            false,
+            ImageFormat::Png,
+            0,
+        )
+        .unwrap();
+        let bytes = std::fs::read(&exclusive).unwrap();
+        assert_eq!(bytes, std::fs::read(&original).unwrap());
+        let err = save_image_wic(
+            &tiny_image(),
+            &exclusive.to_string_lossy(),
+            false,
+            ImageFormat::Png,
+            0,
+        )
+        .unwrap_err();
+        assert_eq!(err.message, "output exists (use --overwrite)");
+        assert_eq!(bytes, std::fs::read(&exclusive).unwrap());
+        std::fs::remove_file(original).unwrap();
+        std::fs::remove_file(exclusive).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn exclusive_creation_removes_partial_file_after_encode_failure() {
+        let path =
+            std::env::temp_dir().join(format!("screencap_bad_image_{}.png", std::process::id()));
+        assert!(
+            save_image_wic(
+                &ImageBuffer::default(),
+                &path.to_string_lossy(),
+                false,
+                ImageFormat::Png,
+                0
+            )
+            .is_err()
+        );
+        assert!(!path.exists());
     }
 
     /// Deterministic pseudo-noise BGRA image so JPEG quality-vs-size assertions

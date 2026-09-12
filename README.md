@@ -49,6 +49,9 @@ For JPEG, `--quality <1-100>` sets the encode quality (default `90`);
 combobox (the CLI default quality applies); the output-file extension follows
 the selected format.
 
+The GUI asks before replacing an existing file when Capture is pressed.
+Output-path, Browse, and format controls are disabled until capture finishes.
+
 ## Cursor
 
 Captures exclude the mouse cursor by default. Pass `--cursor` to include it.

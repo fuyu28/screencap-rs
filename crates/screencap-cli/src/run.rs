@@ -85,12 +85,12 @@ fn pre_parse_bootstrap(argv: &[String]) -> BootstrapOptions {
     let mut i = 1usize;
     while i < argc {
         let a = &argv[i];
-        if a == "--log-dir" && i + 1 < argc {
+        if a == "--log-dir" && argv.get(i + 1).is_some_and(|v| !v.starts_with('-')) {
             i += 1;
             b.log_dir = argv[i].clone();
         } else if let Some(value) = a.strip_prefix("--log-dir=") {
             b.log_dir = value.to_string();
-        } else if a == "--log-level" && i + 1 < argc {
+        } else if a == "--log-level" && argv.get(i + 1).is_some_and(|v| !v.starts_with('-')) {
             i += 1;
             b.log_level = screencap_core::logging::parse_log_level(&argv[i]);
         } else if let Some(value) = a.strip_prefix("--log-level=") {
@@ -880,6 +880,31 @@ mod tests {
         ]));
         assert_eq!(b.log_dir, "C:\\logs");
         assert_eq!(b.log_level, LogLevel::Warn);
+    }
+
+    #[test]
+    fn pre_parse_bootstrap_preserves_flags_after_missing_values() {
+        for option in ["--log-dir", "--log-level"] {
+            for flag in ["--json", "--no-log"] {
+                let b = pre_parse_bootstrap(&argv(&["screencap-cli", "cap", option, flag]));
+                assert_eq!(b.json, flag == "--json");
+                assert_eq!(b.no_log, flag == "--no-log");
+                assert_eq!(b.log_dir, "./logs");
+                assert_eq!(b.log_level, LogLevel::Info);
+            }
+        }
+    }
+
+    #[test]
+    fn pre_parse_bootstrap_accepts_hyphen_prefixed_log_dir_with_equals() {
+        let b = pre_parse_bootstrap(&argv(&[
+            "screencap-cli",
+            "cap",
+            "--log-dir=-logs",
+            "--json",
+        ]));
+        assert_eq!(b.log_dir, "-logs");
+        assert!(b.json);
     }
 
     #[test]

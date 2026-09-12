@@ -118,10 +118,10 @@ struct CapCli {
     #[arg(long, value_enum, default_value = "none")]
     crop: CropArg,
 
-    #[arg(long, num_args = 4, value_names = ["X", "Y", "W", "H"])]
+    #[arg(long, num_args = 4, allow_negative_numbers = true, value_names = ["X", "Y", "W", "H"])]
     crop_rect: Option<Vec<i32>>,
 
-    #[arg(long, num_args = 4, value_names = ["L", "T", "R", "B"])]
+    #[arg(long, num_args = 4, allow_negative_numbers = true, value_names = ["L", "T", "R", "B"])]
     pad: Option<Vec<i32>>,
 
     #[arg(long, default_value = "png")]
@@ -136,6 +136,7 @@ struct CapCli {
     #[arg(long)]
     hotkey: Option<String>,
 
+    /// Capture the foreground window when the hotkey fires, overriding --hwnd.
     #[arg(long)]
     hotkey_foreground: bool,
 
@@ -417,6 +418,7 @@ impl CapCli {
         };
 
         if self.hotkey_foreground {
+            window_query.hwnd = None;
             window_query.foreground = true;
         }
 
@@ -711,6 +713,46 @@ mod tests {
     }
 
     #[test]
+    fn manual_crop_accepts_negative_screen_coordinates() {
+        let mut argv = base_window_cap();
+        argv.extend(args(&[
+            "--crop",
+            "manual",
+            "--crop-rect",
+            "-1920",
+            "-1080",
+            "100",
+            "200",
+        ]));
+        let parsed = parse_args(&argv).unwrap();
+        assert_eq!(
+            parsed.cap.crop_rect,
+            Some(CropRect {
+                x: -1920,
+                y: -1080,
+                w: 100,
+                h: 200
+            })
+        );
+    }
+
+    #[test]
+    fn pad_accepts_negative_insets() {
+        let mut argv = base_window_cap();
+        argv.extend(args(&["--pad", "-1", "-2", "-3", "-4"]));
+        let parsed = parse_args(&argv).unwrap();
+        assert_eq!(
+            parsed.cap.pad,
+            Pad {
+                l: -1,
+                t: -2,
+                r: -3,
+                b: -4
+            }
+        );
+    }
+
+    #[test]
     fn force_alpha_only_accepts_255() {
         let mut ok = base_window_cap();
         ok.extend(args(&["--force-alpha", "255"]));
@@ -800,6 +842,7 @@ mod tests {
         let parsed = parse_args(&argv).expect("hotkey-foreground with hotkey should parse");
         assert!(parsed.cap.hotkey_enabled);
         assert!(parsed.cap.window_query.foreground);
+        assert_eq!(parsed.cap.window_query.hwnd, None);
     }
 
     #[test]

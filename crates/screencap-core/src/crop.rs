@@ -262,6 +262,44 @@ mod tests {
     }
 
     #[test]
+    fn resolve_rejects_extreme_disjoint_coordinates_without_overflow() {
+        for (cap, manual) in [
+            (
+                rect(-3840, 0, -1920, 1080),
+                CropRect {
+                    x: i32::MAX,
+                    y: 0,
+                    w: 1,
+                    h: 1,
+                },
+            ),
+            (
+                rect(0, 0, 1920, 1080),
+                CropRect {
+                    x: i32::MIN,
+                    y: 0,
+                    w: 1,
+                    h: 1,
+                },
+            ),
+            (
+                rect(0, -2160, 1920, -1080),
+                CropRect {
+                    x: 0,
+                    y: i32::MAX,
+                    w: 1,
+                    h: 1,
+                },
+            ),
+        ] {
+            let err =
+                resolve_crop_rect_screen(CropMode::Manual, Some(manual), None, cap, Pad::default())
+                    .unwrap_err();
+            assert_eq!(err.message, "crop rect is empty after intersection");
+        }
+    }
+
+    #[test]
     fn crop_in_place_extracts_subregion() {
         let mut img = coord_buffer(4, 3, 0, 0);
         crop_image_in_place(rect(1, 1, 3, 3), &mut img).unwrap();

@@ -31,7 +31,7 @@ impl Rect {
         self.bottom - self.top
     }
     pub fn is_valid(&self) -> bool {
-        self.width() > 0 && self.height() > 0
+        self.left < self.right && self.top < self.bottom
     }
 }
 

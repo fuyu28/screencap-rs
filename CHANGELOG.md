@@ -17,6 +17,16 @@ behavior changes.
   in debug builds; return the normal validation error and exit code 2.
 - GUI: keep capture results in an owned channel so an undelivered completion
   message cannot leak a raw error-string allocation.
+- Core: reject disjoint crop rectangles with extreme coordinates without
+  overflowing; exclusively create output files when `--overwrite` is absent,
+  including when another writer creates the destination after validation.
+- CLI: accept negative screen coordinates for manual crops and negative pad
+  values; preserve `--json` and `--no-log` after a missing logging-option value.
+- CLI: make `--hotkey-foreground` override an explicit `--hwnd`.
+- GUI: confirm replacement of the final output path at capture time, including
+  paths entered manually or changed by format selection.
+- GUI: lock output settings during capture, resolve relative paths before
+  starting the worker, and preserve the working directory when browsing.
 
 ## [0.4.1] - 2026-07-19
 

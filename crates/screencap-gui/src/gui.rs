@@ -13,7 +13,7 @@ use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM}
 use windows::Win32::Graphics::Gdi::{COLOR_WINDOW, HBRUSH, UpdateWindow};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::Dialogs::{
-    GetSaveFileNameW, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+    GetSaveFileNameW, OFN_NOCHANGEDIR, OFN_PATHMUSTEXIST, OPENFILENAMEW,
 };
 use windows::Win32::UI::Controls::{
     BST_CHECKED, ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx,
@@ -31,12 +31,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
     BM_GETCHECK, BS_AUTOCHECKBOX, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, CBN_SELCHANGE,
     CBS_DROPDOWNLIST, CREATESTRUCTW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
     DispatchMessageW, ES_AUTOHSCROLL, GA_ROOT, GWLP_USERDATA, GetAncestor, GetClientRect,
-    GetMessageW, GetWindowLongPtrW, HMENU, IDC_ARROW, LoadCursorW, MB_ICONERROR,
-    MB_ICONINFORMATION, MSG, MessageBoxW, MoveWindow, PostMessageW, PostQuitMessage,
-    RegisterClassW, SW_SHOW, SendMessageW, SetWindowLongPtrW, SetWindowTextW, ShowWindow,
-    TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_COMMAND, WM_CREATE, WM_DESTROY,
-    WM_NCCREATE, WM_NOTIFY, WM_SIZE, WNDCLASSW, WS_CHILD, WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW,
-    WS_VISIBLE,
+    GetMessageW, GetWindowLongPtrW, HMENU, IDC_ARROW, IDYES, LoadCursorW, MB_DEFBUTTON2,
+    MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_YESNO, MSG, MessageBoxW, MoveWindow,
+    PostMessageW, PostQuitMessage, RegisterClassW, SW_SHOW, SendMessageW, SetWindowLongPtrW,
+    SetWindowTextW, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP,
+    WM_COMMAND, WM_CREATE, WM_DESTROY, WM_NCCREATE, WM_NOTIFY, WM_SIZE, WNDCLASSW, WS_CHILD,
+    WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 use windows::core::{HSTRING, PCWSTR, PWSTR, w};
 
@@ -554,6 +554,9 @@ fn build_save_filter(format: ImageFormat) -> Vec<u16> {
 
 /// Opens the save-file dialog and writes the chosen path into the output edit control.
 fn browse_output(state: &mut GuiState) {
+    if state.capture_result.is_some() {
+        return;
+    }
     let current = get_window_text_utf8(state.out);
     let mut file_buf = to_wide_fixed(&current, 260);
     let format = selected_format(state);
@@ -567,7 +570,7 @@ fn browse_output(state: &mut GuiState) {
         lpstrFile: PWSTR(file_buf.as_mut_ptr()),
         nMaxFile: file_buf.len() as u32,
         lpstrDefExt: PCWSTR(def_ext.as_ptr()),
-        Flags: OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST,
+        Flags: OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST,
         ..Default::default()
     };
 
@@ -677,6 +680,50 @@ fn extract_cli_error_message(stdout: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Builds the CLI invocation for a capture with the chosen overwrite policy.
+fn capture_command(
+    cli_path: &Path,
+    target: CaptureTarget,
+    out_path: &str,
+    format: ImageFormat,
+    include_cursor: bool,
+    overwrite: bool,
+) -> Command {
+    let mut command = Command::new(cli_path);
+    command
+        .arg("cap")
+        .arg("--method")
+        .arg(target.method())
+        .arg("--out")
+        .arg(out_path)
+        .arg("--json")
+        .arg("--no-log")
+        .arg("--timeout-ms")
+        .arg("2000")
+        .arg("--force-alpha")
+        .arg("255");
+
+    if overwrite {
+        command.arg("--overwrite");
+    }
+
+    match target {
+        CaptureTarget::Window(hwnd) => {
+            command.args(["--target", "window", "--hwnd", &hwnd.to_string()]);
+        }
+        CaptureTarget::Monitor(index) => {
+            command.args(["--target", "screen", "--monitor", &index.to_string()]);
+        }
+    }
+    if format != ImageFormat::default() {
+        command.arg("--format").arg(format.as_str());
+    }
+    if include_cursor {
+        command.arg("--cursor");
+    }
+    command
+}
+
 /// Shell out to screencap-cli.exe with `CREATE_NO_WINDOW` so no console flashes
 /// up. `target` selects the `--target window` vs `--target screen` argv.
 fn run_capture_process(
@@ -684,6 +731,7 @@ fn run_capture_process(
     out_path: &str,
     format: ImageFormat,
     include_cursor: bool,
+    overwrite: bool,
 ) -> Result<(), String> {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -692,49 +740,16 @@ fn run_capture_process(
         return Err("screencap-cli.exe was not found next to screencap.exe.".to_string());
     }
 
-    let mut command = Command::new(&cli_path);
-    command
-        .arg("cap")
-        .arg("--method")
-        .arg(target.method())
-        .arg("--out")
-        .arg(out_path)
-        .arg("--overwrite")
-        .arg("--json")
-        .arg("--no-log")
-        .arg("--timeout-ms")
-        .arg("2000")
-        .arg("--force-alpha")
-        .arg("255");
-
-    match target {
-        CaptureTarget::Window(hwnd) => {
-            command
-                .arg("--target")
-                .arg("window")
-                .arg("--hwnd")
-                .arg(hwnd.to_string());
-        }
-        CaptureTarget::Monitor(index) => {
-            command
-                .arg("--target")
-                .arg("screen")
-                .arg("--monitor")
-                .arg(index.to_string());
-        }
-    }
-
-    // Do not pass --format when it matches the CLI default; keeps argv minimal.
-    if format != ImageFormat::default() {
-        command.arg("--format").arg(format.as_str());
-    }
-
-    // Do not pass --cursor unless opted in; CLI excludes the cursor by default.
-    if include_cursor {
-        command.arg("--cursor");
-    }
-
-    let output = command.creation_flags(CREATE_NO_WINDOW).output();
+    let output = capture_command(
+        &cli_path,
+        target,
+        out_path,
+        format,
+        include_cursor,
+        overwrite,
+    )
+    .creation_flags(CREATE_NO_WINDOW)
+    .output();
 
     match output {
         Ok(output) if output.status.success() => Ok(()),
@@ -749,6 +764,23 @@ fn run_capture_process(
             Err(message)
         }
         Err(e) => Err(format!("Failed to start screencap-cli.exe: {e}")),
+    }
+}
+
+/// Resolves a validated output path against the current working directory.
+fn absolute_output_path(path: &str) -> Result<String, String> {
+    validate_output_path(path)?;
+    std::path::absolute(normalize_path_separators(path))
+        .map(|p| p.to_string_lossy().into_owned())
+        .map_err(|e| format!("Could not resolve output path: {e}"))
+}
+
+/// Enables capture settings only while no worker is using them.
+fn set_capture_controls_enabled(state: &GuiState, enabled: bool) {
+    for control in [state.capture, state.out, state.browse, state.format] {
+        unsafe {
+            let _ = EnableWindow(control, enabled);
+        }
     }
 }
 
@@ -790,15 +822,16 @@ fn capture_selected(state: &mut GuiState) {
 
     // Do not defer invalid paths to the CLI: surface a clear dialog here instead
     // of an opaque exit code. `/` is valid on Windows and passes validate_output_path.
-    if let Err(reason) = validate_output_path(&out_path) {
-        info_box(state.hwnd, &reason);
-        return;
-    }
-
-    let normalized_out = normalize_path_separators(&out_path);
+    let out_path = match absolute_output_path(&out_path) {
+        Ok(path) => path,
+        Err(reason) => {
+            info_box(state.hwnd, &reason);
+            return;
+        }
+    };
     // Do not rely on the CLI alone for a missing parent directory; check here
     // after the same separator normalization the backend uses.
-    if let Some(parent) = output_parent_dir(&normalized_out)
+    if let Some(parent) = output_parent_dir(&out_path)
         && !std::fs::metadata(parent)
             .map(|m| m.is_dir())
             .unwrap_or(false)
@@ -813,12 +846,40 @@ fn capture_selected(state: &mut GuiState) {
     let format = selected_format(state);
     let include_cursor = cursor_included(state);
 
+    let overwrite = match std::fs::metadata(&out_path) {
+        Ok(meta) if meta.is_dir() => {
+            info_box(
+                state.hwnd,
+                &format!("output path is a directory: {out_path}"),
+            );
+            return;
+        }
+        Ok(_) => {
+            let answer = unsafe {
+                MessageBoxW(
+                    Some(state.hwnd),
+                    &HSTRING::from(format!("Replace the existing file?\n{out_path}")),
+                    w!("screencap"),
+                    MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2,
+                )
+            };
+            if answer != IDYES {
+                return;
+            }
+            true
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => {
+            info_box(state.hwnd, &format!("Could not inspect output path: {e}"));
+            return;
+        }
+    };
+
     let (tx, rx) = mpsc::channel();
     state.capture_result = Some(rx);
     state.pending_out = out_path.clone();
-    unsafe {
-        let _ = EnableWindow(state.capture, false);
-    }
+    set_window_text(state.out, &out_path);
+    set_capture_controls_enabled(state, false);
     set_status(state, "Capturing...");
     unsafe {
         let _ = UpdateWindow(state.hwnd);
@@ -827,7 +888,7 @@ fn capture_selected(state: &mut GuiState) {
     // HWND is not Send; carry raw bits and rebuild on the worker thread.
     let hwnd_raw = state.hwnd.0 as isize;
     std::thread::spawn(move || {
-        let result = run_capture_process(target, &out_path, format, include_cursor);
+        let result = run_capture_process(target, &out_path, format, include_cursor, overwrite);
         // A raw LPARAM payload would leak if posting fails or the window closes.
         if tx.send(result).is_err() {
             return;
@@ -852,9 +913,7 @@ fn on_capture_done(state: &mut GuiState) {
     let Some(result) = take_capture_result(state) else {
         return;
     };
-    unsafe {
-        let _ = EnableWindow(state.capture, true);
-    }
+    set_capture_controls_enabled(state, true);
 
     match result {
         Ok(()) => {
@@ -1185,11 +1244,64 @@ pub fn run_gui() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        GuiState, extract_cli_error_message, next_output_path, restore_monitor_selection,
-        take_capture_result,
+        CaptureTarget, GuiState, absolute_output_path, capture_command, extract_cli_error_message,
+        next_output_path, restore_monitor_selection, take_capture_result,
     };
     use screencap_core::types::{ImageFormat, MonitorInfo, Rect};
+    use std::path::Path;
     use std::sync::mpsc;
+
+    #[test]
+    fn capture_command_overwrites_only_after_confirmation() {
+        for overwrite in [false, true] {
+            let cmd = capture_command(
+                Path::new("screencap-cli.exe"),
+                CaptureTarget::Window(1234),
+                r"C:\shots\photo.png",
+                ImageFormat::Png,
+                false,
+                overwrite,
+            );
+            assert_eq!(cmd.get_args().any(|arg| arg == "--overwrite"), overwrite);
+            assert!(cmd.get_args().any(|arg| arg == r"C:\shots\photo.png"));
+        }
+    }
+
+    #[test]
+    fn capture_command_preserves_monitor_format_and_cursor_options() {
+        let cmd = capture_command(
+            Path::new("screencap-cli.exe"),
+            CaptureTarget::Monitor(2),
+            r"C:\shots\photo.jpg",
+            ImageFormat::Jpg,
+            true,
+            false,
+        );
+        let args: Vec<_> = cmd.get_args().map(|arg| arg.to_str().unwrap()).collect();
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--method", "wgc-monitor"])
+        );
+        assert!(args.windows(2).any(|pair| pair == ["--monitor", "2"]));
+        assert!(args.windows(2).any(|pair| pair == ["--format", "jpg"]));
+        assert!(args.contains(&"--cursor"));
+        assert!(!args.contains(&"--overwrite"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn relative_output_is_resolved_before_worker_start() {
+        let path = absolute_output_path("shots/photo.png").unwrap();
+        assert_eq!(
+            Path::new(&path),
+            std::env::current_dir()
+                .unwrap()
+                .join("shots")
+                .join("photo.png")
+        );
+        assert!(Path::new(&path).is_absolute());
+        assert!(absolute_output_path("bad?.png").is_err());
+    }
 
     #[test]
     fn pending_capture_survives_an_early_notification() {

@@ -282,23 +282,15 @@ fn resolve_capture_targets(
     if parsed.cap.target == TargetType::Screen || method.contains("monitor") {
         let monitors = enumerate_monitors();
         if let Some(token) = &parsed.cap.screen_query.monitor {
-            match find_monitor_by_token(&monitors, token) {
-                Some(mon) => {
-                    ctx.capture_rect_screen = mon.desktop;
-                    ctx.monitor = Some(mon);
-                }
-                None => {
-                    return Err(ErrorInfo::new("monitor not found", "RunCap"));
-                }
-            }
+            let mon = find_monitor_by_token(&monitors, token)
+                .ok_or_else(|| ErrorInfo::new("monitor not found", "RunCap"))?;
+            ctx.capture_rect_screen = mon.desktop;
+            ctx.monitor = Some(mon);
         } else if let Some(w) = &ctx.window {
             let h = unsafe { MonitorFromWindow(HWND(w.hwnd as *mut _), MONITOR_DEFAULTTONEAREST) };
-            for m in &monitors {
-                if m.hmon == h.0 as isize {
-                    ctx.monitor = Some(m.clone());
-                    ctx.capture_rect_screen = m.desktop;
-                    break;
-                }
+            if let Some(m) = monitors.into_iter().find(|m| m.hmon == h.0 as isize) {
+                ctx.capture_rect_screen = m.desktop;
+                ctx.monitor = Some(m);
             }
         }
 
@@ -628,30 +620,26 @@ fn wait_for_hotkey(parsed: &ParsedArgs, logger: &Logger) -> Result<(), ErrorInfo
     }
 
     let mut msg = MSG::default();
-    let result: Result<(), ErrorInfo>;
-    loop {
+    let result = loop {
         let gm = unsafe { GetMessageW(&mut msg, None, 0, 0) };
         if gm.0 == -1 {
             let code = unsafe { GetLastError() };
-            result = Err(ErrorInfo::with_win32(
+            break Err(ErrorInfo::with_win32(
                 "GetMessage failed",
                 "WaitForHotkey",
                 code.0,
             ));
-            break;
         }
         if gm.0 == 0 {
-            result = Err(ErrorInfo::new(
+            break Err(ErrorInfo::new(
                 "message loop ended before hotkey",
                 "WaitForHotkey",
             ));
-            break;
         }
         if msg.message == WM_HOTKEY && msg.wParam.0 as i32 == HOTKEY_ID {
-            result = Ok(());
-            break;
+            break Ok(());
         }
-    }
+    };
 
     unsafe {
         let _ = UnregisterHotKey(None, HOTKEY_ID);
